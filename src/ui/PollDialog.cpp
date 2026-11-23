@@ -1,6 +1,7 @@
 #include "PollDialog.h"
 
 #include "core/ApiClient.h"
+#include "core/TalkRefusalPolicy.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -13,6 +14,13 @@
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
+
+// Which reason Talk's refusal of a vote or a close is (TalkRefusalPolicy.h); its code is never shown.
+static talq::TalkRefusal refusalOf(talq::TalkRequest request, const QJsonObject &data, int status)
+{
+    return talq::classifyTalkRefusal(request, status,
+                                     data.value(QStringLiteral("error")).toString().toStdString());
+}
 
 // ═══════════════════════════════════════════════════════
 // PollDialog — view + vote
@@ -36,7 +44,14 @@ PollDialog::PollDialog(ApiClient *api, const QString &token, int pollId, QWidget
     m_question->setProperty("role", "title");
     QFont qf = m_question->font();
     qf.setBold(true);
-    qf.setPointSizeF(qf.pointSizeF() + 1.5);
+    // Grown in the unit the font has. The app font is pixel-sized (main.cpp),
+    // and pointSizeF() is -1 for such a font, so "+ 1.5" used to ask for 0.5 pt.
+    // (role "title" in AppStyle sets size and weight too, and wins once the
+    // style sheet polishes the label.)
+    if (qf.pixelSize() > 0)
+        qf.setPixelSize(qf.pixelSize() + 2);
+    else
+        qf.setPointSizeF(qf.pointSizeF() + 1.5);
     m_question->setFont(qf);
     root->addWidget(m_question);
 
@@ -162,9 +177,30 @@ void PollDialog::submitVote()
         if (m_optionButtons[i]->isChecked()) chosen.append(i);
 
     m_voteBtn->setEnabled(false);
-    m_api->votePoll(m_token, m_pollId, chosen, [this](bool ok, const QJsonObject &data, int) {
+    m_api->votePoll(m_token, m_pollId, chosen, [this](bool ok, const QJsonObject &data, int status) {
         if (!ok) {
-            m_status->setText(tr("Your vote was not accepted."));
+            using talq::TalkRefusal;
+            switch (refusalOf(talq::TalkRequest::VotePoll, data, status)) {
+            case TalkRefusal::PollEnded:
+                fetchPoll();   // shows the final state, "This poll has ended." included
+                return;
+            case TalkRefusal::PollGone:
+                showGone();
+                return;
+            case TalkRefusal::NoConnection:
+                m_status->setText(tr("Your vote was not sent: TalQ could not reach the server."));
+                break;
+            case TalkRefusal::TooManyChoices:
+                // Only a poll that allows a set number above one can get here: one answer is a
+                // radio group, and 0 is no limit.
+                m_status->setText(m_maxVotes > 1
+                    ? tr("Choose at most %n answer(s).", nullptr, m_maxVotes)
+                    : tr("Your vote was not accepted."));
+                break;
+            default:
+                m_status->setText(tr("Your vote was not accepted."));
+                break;
+            }
             m_voteBtn->setEnabled(true);
             return;
         }
@@ -176,13 +212,40 @@ void PollDialog::submitVote()
 
 void PollDialog::closePoll()
 {
-    m_api->closePoll(m_token, m_pollId, [this](bool ok, const QJsonObject &data, int) {
+    m_api->closePoll(m_token, m_pollId, [this](bool ok, const QJsonObject &data, int status) {
         if (!ok) {
-            m_status->setText(tr("Could not end this poll."));
-            return;
+            using talq::TalkRefusal;
+            switch (refusalOf(talq::TalkRequest::ClosePoll, data, status)) {
+            case TalkRefusal::PollEnded:
+                fetchPoll();   // ended meanwhile: show its final state
+                return;
+            case TalkRefusal::PollGone:
+                showGone();
+                return;
+            case TalkRefusal::PollNotYours:
+                m_status->setText(tr("Only the poll's author or a moderator can end it."));
+                return;
+            case TalkRefusal::NoConnection:
+                m_status->setText(tr("Could not end this poll: TalQ could not reach the server."));
+                return;
+            default:
+                m_status->setText(tr("Could not end this poll."));
+                return;
+            }
         }
         applyPoll(data);
     });
+}
+
+// The poll is not there any more (its message deleted), or is a draft this user may not see:
+// nothing here can be done with it.
+void PollDialog::showGone()
+{
+    m_status->setText(tr("This poll no longer exists."));
+    m_voteBtn->setVisible(false);
+    m_closeBtn->setVisible(false);
+    for (QAbstractButton *b : m_optionButtons)
+        b->setEnabled(false);
 }
 
 // ═══════════════════════════════════════════════════════

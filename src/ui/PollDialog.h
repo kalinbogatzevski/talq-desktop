@@ -42,6 +42,8 @@ private:
     void applyPoll(const QJsonObject &poll);
     void submitVote();
     void closePoll();
+    // A vote or close was refused because the poll is not there: say so, offer nothing more.
+    void showGone();
 
     ApiClient  *m_api;
     QString     m_token;

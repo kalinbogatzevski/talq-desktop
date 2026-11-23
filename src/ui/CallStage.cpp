@@ -1097,8 +1097,10 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     const QImage &frame = t.isScreen
         ? (cp->isSelf() ? m_selfScreenFrame : m_scrFrame.value(cp))
         : m_camFrame.value(cp);
+    // A peer whose camera state nobody has reported yet (videoUnknown) shows
+    // the frames that do arrive: hiding them behind "Camera off" is the guess.
     const bool showVideo = !frame.isNull()
-        && (t.isScreen || (!cp->videoMuted()))
+        && (t.isScreen || !cp->videoMuted() || cp->videoUnknown())
         && !selfMonitorShare;
     if (showVideo) {
         QSize sc = frame.size().scaled(rc.size().toSize(),
@@ -1145,7 +1147,7 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
             } else if (cp->isSelf()) {
                 cap = m_call->isCameraOn() ? tr("Starting camera…")
                                            : tr("Camera off");
-            } else if (cp->videoMuted()) {
+            } else if (cp->videoMuted() && !cp->videoUnknown()) {
                 cap = tr("Camera off");
             } else if (cp->connState() == CallParticipant::Connecting
                        && m_call->state() != CallManager::Active) {

@@ -240,11 +240,14 @@ public:
                                                      const QString &message)> callback);
 
     // Schedule a reminder for a chat message. NC Talk server persists this
-    // and sends a notification when the time comes.
+    // and sends a notification when the time comes. On a refusal the callback
+    // gets the HTTP status (0 = never reached the server) and Talk's machine
+    // code from ocs.data.error ("" when none): a code to map, never to show.
     void setMessageReminder(const QString &token, int messageId,
                             const QDateTime &when,
                             QObject *context,
-                            std::function<void(bool ok, const QString &error)> callback);
+                            std::function<void(bool ok, int httpStatus,
+                                               const QString &errorCode)> callback);
     void cancelMessageReminder(const QString &token, int messageId,
                                QObject *context,
                                std::function<void(bool ok, const QString &error)> callback);

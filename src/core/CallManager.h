@@ -584,6 +584,12 @@ private:
 
     // --- Participant registry (additive; mirrors signaling/pipeline state) ---
     CallParticipant *ensureParticipant(const QString &sessionId, const QString &name);
+    // A "joined the call" report for an in-call session: ensure its tile, write
+    // the flags talq::decideRegisteredPeerFlags allows, and record a 1:1 peer
+    // session in m_peerInCallSids. Returns the flags the report may subscribe on
+    // (talq::subscribablePeerFlags).
+    int registerPeerTile(const QString &sessionId, const QString &displayName,
+                         int flags, bool flagsSynthesized);
     CallParticipant *ensureSelfParticipant();
     void removeParticipant(const QString &sessionId);
     void syncSelfParticipant();

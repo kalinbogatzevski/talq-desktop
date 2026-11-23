@@ -16,8 +16,10 @@
 //
 //  * The OUTPUT is the stored message HTML: escaped text plus semantic tags,
 //    real '\n' for a line break (BodyHtml.h layoutHtml turns them into <br>),
-//    and COLOURLESS -- no style=, no colour, ever. Colour comes from
-//    PainterTheme::richTextStyleSheet(), per theme, at paint time.
+//    and COLOURLESS -- no colour, ever, and no style= that paints. Colour comes
+//    from PainterTheme::richTextStyleSheet(), per theme, at paint time. The one
+//    style= written is `-qt-user-state:N` on a task item's <li>: the number of
+//    its box, which Qt keeps on the block and does not draw (TaskListLogic.h).
 //
 //  * The INPUT is the RAW text the sender typed. Every character that reaches the
 //    output goes through an escape here; there is no raw-HTML pass-through (the

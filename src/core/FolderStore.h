@@ -102,6 +102,8 @@ public:
     talq::FolderResult renameFolder(const QString &id, const QString &name);
     talq::FolderResult deleteFolder(const QString &id);
     talq::FolderResult moveFolder(const QString &id, int delta);
+    // "Sort folders A to Z": the whole list into name order (FolderLogic.h, "Folder order").
+    talq::FolderResult sortFoldersByName();
     talq::FolderResult assign(const QString &token, const QString &folderId /* empty = unfile */);
     talq::FolderResult setCollapsed(const QString &id, bool collapsed);
     talq::FolderResult setOtherCollapsed(bool collapsed);

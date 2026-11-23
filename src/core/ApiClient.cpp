@@ -1109,7 +1109,7 @@ void ApiClient::shareNextcloudFileToChat(const QString &token, const QString &pa
 void ApiClient::setMessageReminder(const QString &token, int messageId,
                                    const QDateTime &when,
                                    QObject *context,
-                                   std::function<void(bool, const QString &)> callback)
+                                   std::function<void(bool, int, const QString &)> callback)
 {
     QJsonObject body;
     body["timestamp"] = static_cast<qint64>(when.toSecsSinceEpoch());
@@ -1126,8 +1126,12 @@ void ApiClient::setMessageReminder(const QString &token, int messageId,
                               .value(QStringLiteral("ocs")).toObject();
         QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
         const int ocsStatus = meta.value(QStringLiteral("statuscode")).toInt();
-        if (ocsStatus >= 200 && ocsStatus < 300) { callback(true, QString()); return; }
-        callback(false, meta.value(QStringLiteral("message")).toString());
+        if (ocsStatus >= 200 && ocsStatus < 300) { callback(true, ocsStatus, QString()); return; }
+        // Talk's refusal is {"error":"message"} in data, with an empty meta.message (which is
+        // what this used to hand on, so the user only ever read the generic line).
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        callback(false, httpStatus,
+                 ocs.value(QStringLiteral("data")).toObject().value(QStringLiteral("error")).toString());
     });
 }
 

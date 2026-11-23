@@ -21,7 +21,8 @@
 //     mtime) is never taken for ours;
 //   - never on a guess: an unknown or future timestamp keeps the file.
 // What it must never touch, and the test pins: the downloaded installer (TalQ-v<ver>-Setup.exe,
-// talq-update*.exe -- UpdateChecker owns those), the self-test log, and anything else.
+// talq-update*.exe -- UpdateChecker owns those and has its own sweep, InstallerSweep.h), the
+// self-test log, and anything else.
 
 #include <QDateTime>
 #include <QDir>

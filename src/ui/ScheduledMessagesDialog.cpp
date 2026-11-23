@@ -1,5 +1,6 @@
 #include "ScheduledMessagesDialog.h"
 #include "core/ApiClient.h"
+#include "core/TalkRefusalPolicy.h"
 
 #include <QDateTime>
 #include <QDateTimeEdit>
@@ -137,11 +138,19 @@ void ScheduledMessagesDialog::renderItems(const QJsonArray &items)
         // The edit popup starts from the whole message, byte for byte, so that
         // saving without touching the text changes nothing.
         const QString editPrefill = fullText;
+        // Whether it was scheduled silently. The edit has to send it back: the
+        // server's edit takes `silent` with a default of false and overwrites
+        // the stored flag with whatever arrives (spreed v25.0.7
+        // ScheduledMessageService::editMessage), so leaving it out un-silenced
+        // the message. An older server that does not list the field reads as
+        // false, which is what was sent before.
+        const bool silent = o.value(QStringLiteral("silent")).toBool();
         auto *editBtn = new QPushButton(tr("Edit"), row);
         editBtn->setProperty("variant", "default");
         editBtn->setFixedWidth(70);
-        connect(editBtn, &QPushButton::clicked, this, [this, messageId, editPrefill, sendAt]() {
-            editItem(messageId, editPrefill, sendAt);
+        connect(editBtn, &QPushButton::clicked, this,
+                [this, messageId, editPrefill, sendAt, silent]() {
+            editItem(messageId, editPrefill, sendAt, silent);
         });
         rowLayout->addWidget(editBtn);
 
@@ -165,20 +174,61 @@ void ScheduledMessagesDialog::deleteItem(qint64 messageId)
     if (!m_api || messageId <= 0) return;
     const QString path = QStringLiteral("apps/spreed/api/v1/chat/%1/schedule/%2")
                             .arg(m_token).arg(messageId);
-    m_api->del(path, [this](bool ok, const QJsonObject &, int) {
+    m_api->del(path, [this](bool ok, const QJsonObject &data, int httpStatus) {
         if (ok) {
             reload();
-        } else if (auto *status = findChild<QLabel *>(QStringLiteral("status"))) {
-            // Server refused the cancel — surface it instead of silently
-            // leaving the (still-pending) row in place.
-            status->setText(tr("Couldn't cancel — the message may have already "
-                               "been sent."));
-            status->show();
+            return;
         }
+        // Server refused the cancel — surface it instead of silently leaving the row in place.
+        showRefusal(talq::TalkRequest::CancelScheduled, data, httpStatus);
     });
 }
 
-void ScheduledMessagesDialog::editItem(qint64 messageId, const QString &currentText, qint64 currentSendAt)
+// Says on the status line why the server refused a cancel or an edit (TalkRefusalPolicy.h picks
+// the reason; the code itself is never shown). A message that is no longer pending is taken off
+// the list: reload() first, because it clears the status line.
+void ScheduledMessagesDialog::showRefusal(talq::TalkRequest request, const QJsonObject &data,
+                                          int httpStatus)
+{
+    using talq::TalkRefusal;
+    const TalkRefusal why = talq::classifyTalkRefusal(
+        request, httpStatus, data.value(QStringLiteral("error")).toString().toStdString());
+    const bool cancel = (request == talq::TalkRequest::CancelScheduled);
+    QString text;
+    switch (why) {
+    case TalkRefusal::NoConnection:
+        text = cancel ? tr("Couldn't cancel: TalQ could not reach the server.")
+                      : tr("Couldn't save changes: TalQ could not reach the server.");
+        break;
+    case TalkRefusal::ScheduledGone:
+        reload();
+        text = tr("That message was already sent or cancelled.");
+        break;
+    case TalkRefusal::NotAMember:
+        text = tr("Scheduled messages need you to be a member of this conversation.");
+        break;
+    case TalkRefusal::PastTime:
+        text = tr("Couldn't save changes: that send time has already passed. Pick a later time.");
+        break;
+    case TalkRefusal::EmptyText:
+        text = tr("Couldn't save changes: a scheduled message can't be empty.");
+        break;
+    case TalkRefusal::TooLong:
+        text = tr("Couldn't save changes: the message is too long.");
+        break;
+    default:
+        text = cancel ? tr("Couldn't cancel (HTTP %1).").arg(httpStatus)
+                      : tr("Couldn't save changes (HTTP %1).").arg(httpStatus);
+        break;
+    }
+    if (auto *status = findChild<QLabel *>(QStringLiteral("status"))) {
+        status->setText(text);
+        status->show();
+    }
+}
+
+void ScheduledMessagesDialog::editItem(qint64 messageId, const QString &currentText,
+                                       qint64 currentSendAt, bool silent)
 {
     if (!m_api || messageId <= 0) return;
 
@@ -217,16 +267,19 @@ void ScheduledMessagesDialog::editItem(qint64 messageId, const QString &currentT
     QJsonObject body;
     body["message"] = editor->toPlainText().trimmed();
     body["sendAt"]  = when->dateTime().toSecsSinceEpoch();
+    // Always sent, false included: the server replaces the stored flag with it.
+    // No threadTitle: an empty one keeps the stored title, a non-empty one on a
+    // message that does not start a topic is refused.
+    body["silent"]  = silent;
     const QString path = QStringLiteral("apps/spreed/api/v1/chat/%1/schedule/%2")
                             .arg(m_token).arg(messageId);
-    m_api->post(path, body, [this](bool ok, const QJsonObject &, int) {
+    m_api->post(path, body, [this](bool ok, const QJsonObject &data, int httpStatus) {
         if (ok) {
             reload();
-        } else if (auto *status = findChild<QLabel *>(QStringLiteral("status"))) {
-            // Server refused the edit — the inline edit popup has already
-            // closed, so report on the list dialog's persistent status line.
-            status->setText(tr("Couldn't save changes."));
-            status->show();
+            return;
         }
+        // Server refused the edit — the inline edit popup has already closed, so report on the
+        // list dialog's persistent status line.
+        showRefusal(talq::TalkRequest::EditScheduled, data, httpStatus);
     });
 }

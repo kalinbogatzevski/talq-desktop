@@ -587,6 +587,15 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             && !m_subscribePipelines.contains(sessionId)) {
             if (m_remoteSessionId.isEmpty()) {
                 m_remoteSessionId = sessionId;
+                // Stamp the 1:1 peer USER, as every other adopt site does: the
+                // sibling, leave and hang-up handling are keyed on it, and
+                // "add to call" (promoteOneToOneToGroup) refuses without it.
+                // Never our own account (another device of ours in the room).
+                if (isOneToOneCall()) {
+                    const QString uid = m_signaling->userIdForSession(sessionId);
+                    if (!uid.isEmpty() && uid != m_signaling->userId())
+                        m_remotePeerUserId = uid;
+                }
                 emit callInfoChanged();
             }
             requestPeerStream(sessionId);
@@ -5624,9 +5633,10 @@ void CallManager::startCallMedia()
             if (m_state == Idle || !m_remoteSessionId.isEmpty()) return;
             TLOG_CALL("polling call participants for" << m_callToken);
             m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
-                [this](bool ok, const QJsonArray &data, int) {
+                [this, pollGen = m_callGen](bool ok, const QJsonArray &data, int) {
                     if (!ok || m_state == Idle || !m_remoteSessionId.isEmpty())
                         return;
+                    int otherRows = 0, registeredRows = 0;   // talq::callPeerPollIntervalMs
                     for (const auto &val : data) {
                         const QJsonObject p = val.toObject();
                         const QString ncSid = p["sessionId"].toString();
@@ -5700,8 +5710,10 @@ void CallManager::startCallMedia()
                             // and surfaces the delivery failure LOUDLY instead
                             // of ringing into the void. (A row that maps to our
                             // OWN session is not peer evidence — skip those.)
-                            if (sid.isEmpty())
+                            if (sid.isEmpty()) {
                                 noteRestPeerEvidence(ncSid, p["displayName"].toString());
+                                ++otherRows;   // a peer still without a tile
+                            }
                             continue;
                         }
                         TLOG_CALL("discovered in-call peer via REST:"
@@ -5717,6 +5729,8 @@ void CallManager::startCallMedia()
                         handleParticipantJoined(sid, inCall,
                                                 p["displayName"].toString(),
                                                 flagsSynthesized);
+                        ++otherRows;
+                        if (m_participants.contains(sid)) ++registeredRows;
                 }
                     // 2026-07-13 backstop — the promotion stopped the 60s
                     // ring timeout (correctly: the call WAS answered), so a
@@ -5737,6 +5751,23 @@ void CallManager::startCallMedia()
                                       " up while signaling never delivered their"
                                       " session (field 2026-07-13). Ending call.";
                         teardown("Call ended before media could be established");
+                    }
+                    // A group call that went Active before the first tick is never
+                    // adopted, so this poll never stops: once every other row has a
+                    // tile, ask at the slow rate (talq::callPeerPollIntervalMs); back
+                    // to the fast one as soon as a row has none. A handler above can
+                    // end the call (the timer is then gone) or a newer call can own it.
+                    if (pollGen == m_callGen && m_callPollTimer && m_state != Idle
+                        && m_remoteSessionId.isEmpty()) {
+                        const int want = talq::callPeerPollIntervalMs(
+                            !isOneToOneCall(), m_state == Active, m_restPromoted,
+                            otherRows, registeredRows);
+                        if (m_callPollTimer->interval() != want) {
+                            qInfo() << "CallManager: call participant poll now every"
+                                    << want << "ms (" << registeredRows << "of" << otherRows
+                                    << "other rows have a tile)";
+                            m_callPollTimer->setInterval(want);
+                        }
                     }
             });
         };
@@ -5774,7 +5805,7 @@ void CallManager::startCallMedia()
             m_callPollTimer->deleteLater();
         }
         m_callPollTimer = new QTimer(this);
-        m_callPollTimer->setInterval(3000);
+        m_callPollTimer->setInterval(talq::kCallPeerPollFastMs);
         connect(m_callPollTimer, &QTimer::timeout, this, pollParticipants);
         m_callPollTimer->start();
         QTimer::singleShot(1200, this, pollParticipants);
@@ -6337,9 +6368,14 @@ void CallManager::handleParticipantJoined(const QString &sessionId, int flags, c
     // #bug3 -- a 1:1 peer returning from a grace hold (same userId, likely a NEW
     // session id). Take priority over the empty-guard adopt below so the userId
     // correlation wins (and a wrong group joiner during grace is not adopted).
+    // The returning session's tile takes this report's flags and joins
+    // m_peerInCallSids like any other: returning before the registration block
+    // below left a NEW tile at its constructor defaults (audio and video muted)
+    // until the peer's next flag change or data-channel message.
+    // (tryAdoptReturningPeer already asked for the stream.)
     if (tryAdoptReturningPeer(sessionId)) {
         if (m_state == Active || m_state == Connecting || m_state == Reconnecting)
-            ensureParticipant(sessionId, displayName);
+            registerPeerTile(sessionId, displayName, flags, flagsSynthesized);
         return;
     }
 
@@ -6437,10 +6473,14 @@ void CallManager::handleParticipantJoined(const QString &sessionId, int flags, c
     // to the sibling that actually publishes; the group fallthrough below
     // already subscribes it, this moves the call's IDENTITY onto it so leave
     // handling and the hangup hint follow the right device.
+    // Only on media the peer or the server REPORTED: the REST poll's invented
+    // flags claim audio for every row (core/CallPeerFlagsPolicy.h, knownPeerFlags).
     else if ((m_state == Connecting || m_state == Active || m_state == Reconnecting)
              && !m_remoteSessionId.isEmpty()
              && isOneToOneCall() && isPeerUserSession(sessionId)
-             && (flags & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO))
+             && (talq::knownPeerFlags(flagsSynthesized, flags,
+                                      m_signaling->callFlagsForSession(sessionId))
+                 & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO))
              && !m_subscribePipelines.contains(m_remoteSessionId)) {
         qInfo() << "CallManager: 1:1 peer sibling with media joined ("
                 << sessionId.left(20) << ") — re-adopting from idle sibling"
@@ -6530,20 +6570,8 @@ void CallManager::handleParticipantJoined(const QString &sessionId, int flags, c
     // registered when it starts ringing (seedRingParticipants).
     if (m_state == Incoming || m_state == Outgoing
         || m_state == Connecting || m_state == Active) {
-        const bool participantExisted = m_participants.contains(sessionId);
-        if (auto *p = ensureParticipant(sessionId, displayName)) {
-            // 2026-11-02 -- a REST-synthesized report (audio-only, no video bit)
-            // used to be written onto the tile as if the peer had said it, every
-            // 3 s, hiding a live video stream behind "Camera off". The signaling
-            // server's flags win; with none known an existing tile is left alone.
-            const talq::PeerFlagsDecision fd = talq::decideRegisteredPeerFlags(
-                flagsSynthesized, participantExisted, flags,
-                m_signaling->callFlagsForSession(sessionId));
-            if (fd.apply) {
-                p->setAudioMuted(!(fd.flags & CALL_FLAG_WITH_AUDIO));
-                p->setVideoMuted(!(fd.flags & CALL_FLAG_WITH_VIDEO));
-            }
-        }
+        // Also stamps m_peerInCallSids (#bug4) for a 1:1 peer session.
+        const int subscribeFlags = registerPeerTile(sessionId, displayName, flags, flagsSynthesized);
         // GROUP/MCU call — subscribe to EVERY in-call peer that publishes media,
         // not just the first. The 1:1 block above only subscribes m_remoteSessionId
         // (the first joiner); every ADDITIONAL conference peer fell through to here
@@ -6552,19 +6580,44 @@ void CallManager::handleParticipantJoined(const QString &sessionId, int flags, c
         // "we had to stop/start cameras; tester B saw Kalin but not tester A"). requestPeerStream
         // self-dedupes on m_subscribePipelines / m_pendingRequestOffers, so this is a
         // no-op for the already-subscribed first peer and on repeated participant-updates.
+        // Gated on the flags the tile was just given, not the poll's raw guess
+        // (talq::subscribablePeerFlags): a real report is unchanged.
         if ((m_state == Connecting || m_state == Active)
-            && (flags & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO))
+            && (subscribeFlags & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO))
             && !m_subscribePipelines.contains(sessionId)
             && !m_pendingRequestOffers.contains(sessionId)) {
             qInfo() << "CallManager: group call — subscribing additional in-call peer"
                     << sessionId.left(20);
             requestPeerStream(sessionId);
         }
-        // #bug4 -- track every in-call session of the 1:1 peer USER so leave
-        // handling can tell "one device dropped" from "the peer is gone".
-        if (isOneToOneCall() && isPeerUserSession(sessionId))
-            m_peerInCallSids.insert(sessionId);
     }
+}
+
+int CallManager::registerPeerTile(const QString &sessionId, const QString &displayName,
+                                  int flags, bool flagsSynthesized)
+{
+    const bool participantExisted = m_participants.contains(sessionId);
+    int subscribeFlags = 0;
+    if (auto *p = ensureParticipant(sessionId, displayName)) {
+        // 2026-11-02 -- a REST-synthesized report (audio-only, no video bit)
+        // used to be written onto the tile as if the peer had said it, every
+        // 3 s, hiding a live video stream behind "Camera off". The signaling
+        // server's flags win; with none known an existing tile is left alone.
+        const talq::PeerFlagsDecision fd = talq::decideRegisteredPeerFlags(
+            flagsSynthesized, participantExisted, flags,
+            m_signaling->callFlagsForSession(sessionId));
+        if (fd.apply) {
+            p->setAudioMuted(!(fd.flags & CALL_FLAG_WITH_AUDIO));
+            if (fd.videoUnknown) p->markVideoUnknown();
+            else                 p->setVideoMuted(!(fd.flags & CALL_FLAG_WITH_VIDEO));
+        }
+        subscribeFlags = talq::subscribablePeerFlags(fd);
+    }
+    // #bug4 -- track every in-call session of the 1:1 peer USER so leave
+    // handling can tell "one device dropped" from "the peer is gone".
+    if (isOneToOneCall() && isPeerUserSession(sessionId))
+        m_peerInCallSids.insert(sessionId);
+    return subscribeFlags;
 }
 
 void CallManager::onParticipantLeftCall(const QString &sessionId)

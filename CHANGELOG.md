@@ -1,5 +1,97 @@
 # Changelog
 
+## v0.82.0 "Andreevden" — STABLE (2026-11-23)
+
+Promotes the 0.81.x line: you can silence a chat or a single topic so it stops popping up, send several
+files in one message, and writing in an archived chat brings it back into your list. On top of that this
+release puts TalQ on your phone (a code to scan, in Settings), sorts folders A to Z, lets you tick the boxes
+of a task list in your own messages, and fixes a long list of smaller things: a voice message always goes
+to the chat it was recorded in, a file from a chat carries Windows' "downloaded from the internet" warning,
+and an action the server refuses now says why.
+
+Everyone on 0.80.0 gets all of the below. If you ran a 0.81 beta, the part "New in 0.82.0" is what you do
+not have yet.
+
+### New in 0.82.0
+
+#### Added
+* **TalQ for your phone.** **Settings → Account → TalQ for your phone…** shows a code: scan it with your
+  phone's camera and it takes you to where the newest TalQ for Android is downloaded (sign in with your
+  own account when asked). **Copy link** and **Open in browser** are there too.
+* **Folders are sorted A to Z.** A new or renamed folder takes its alphabetical place (ignoring case, in
+  your language's order, with numbers in number order). If you arranged your folders with **Move up** and
+  **Move down**, that order is kept and new folders go at the end. To sort an existing list, right-click any
+  folder header and choose **Sort folders A to Z**.
+* **Tick a task list in your own messages.** Clicking a box (`- [ ]`) in a message you wrote updates the
+  message, as Talk does on the web. This works on messages you sent in the last day, and on any message in
+  Note to self.
+
+#### Changed
+* **A voice message goes to the chat it was recorded in.** Leaving the chat or going Home while you record
+  now stops the recording and sends it there, with a short "Voice message sent to …" notice. Until now it
+  went to whichever chat was open when you stopped, and on Home the microphone stayed on with no way to stop
+  it. A recording whose chat you left, or that was deleted, is discarded with a notice.
+* **Files from a chat carry Windows' "downloaded from the internet" mark.** Windows now warns before it runs
+  a program someone sent you, and your antivirus checks a file before TalQ opens it. A file that Windows'
+  security settings block, or that the antivirus flags or removes, is reported and never opened.
+* **A refused action says why.** When the server refuses an edit, a delete, a pin, a change to a scheduled
+  message, a poll vote or close, a new poll, a reminder or a summary, TalQ now tells you the reason (for
+  example "a message can only be edited for 24 hours after it was sent" or "only moderators can pin
+  messages") instead of "Failed" or an HTTP number.
+* **Creating or renaming a folder tells you** when its name was shortened to 40 characters.
+
+#### Fixed
+* A voice message whose download failed plays when you click it again; it used to do nothing until TalQ
+  was restarted.
+* A reaction arriving in an open one-to-one chat no longer leaves the chat at "1 unread" in the list and
+  the tray until you switch away and back.
+* Two group chats with the same name no longer show each other's picture in the chat header, and a chat's
+  picture appears in the header the moment you open it.
+* Double-clicking a tag heading in the chat list no longer opens and closes it again.
+* A chat or topic name that looks like formatting (`<b>x</b>`) shows as typed in its tooltip.
+* Scheduled messages: a scheduled reply the server refuses comes back still as a reply; editing a message
+  set to send silently keeps it silent; **Send later** and **Manage scheduled…** appear only on servers that
+  have scheduled messages; a time that cannot be scheduled says why; and refused text is never mixed into a
+  box that holds a caption, an edit or another reply (it is copied to the clipboard instead).
+* The message box: a file cannot be attached while you edit a message (or the other way round), Send while
+  a pasted image is still being prepared no longer sends the text alone, a file sent as a reply stays a
+  reply, **Send silently** works for files, and Alt+right-click on the send button opens its menu.
+* Folder sync: renaming a folder on one computer no longer undoes a folder order you arranged by hand on
+  another computer, and every sync now writes one line to the log (never folder, chat or account names).
+* Automatic updates: an update no longer installs over a message that failed to send and still offers Retry
+  or Discard; a stray space left in a message box no longer holds an update back; the log of the session
+  that installs an update is kept, and the update steps are also written to a small `talq_update.log`;
+  downloaded installers no longer pile up in the temp folder.
+* A file name sent in a chat can no longer create a hidden file stream or open a Windows device when it is
+  saved, and a download never overwrites a file another program creates at the same moment.
+* The main window no longer opens off-screen when the monitor it was last on is gone, and the call window
+  keeps its title bar on screen when it comes back from the corner or from full screen.
+* Calls: a person who comes back after a dropped connection shows the right microphone and camera state; a
+  person whose camera state is not known yet shows the video that arrives instead of "Camera off"; another
+  device of the same person no longer takes over a call on a guess; and a group call stops asking the server
+  for its participant list every 3 seconds.
+
+### From the 0.81.x betas
+* **Silence a chat or a topic.** Right-click a chat (or a topic's tab) and choose **Notifications**:
+  **Never** (no popup, no sound), **Mentions only**, **Default** or **All messages**. A topic's own choice wins
+  over its chat's. These are Nextcloud Talk's own settings, so they are shared with your phone and the web.
+  Until now TalQ saved the choice but never read it.
+* **Count muted chats and topics** (Settings → Notifications), off by default: a silenced chat or topic no
+  longer adds to the numbers in the list, the tray and the taskbar unless you turn this on. Silenced topics
+  are marked on the topic strip, and a topic's choice is remembered.
+* **Several files in one message.** Paste files copied in Explorer, drop them on the chat, or pick several in
+  **Send file**; they are sent one after another under one caption.
+* **Writing in an archived chat brings it back** into your list, here and on your other devices. Receiving
+  a message does not.
+
+### Good to know
+* **The licence notices now come with the app.** `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES.md` are
+  installed next to `talq.exe`.
+* **What was checked.** Every change above is covered by automatic checks of its rules (several hundred
+  new ones), and the whole app was built and its quick test sweep run. **Not yet seen in a real TalQ
+  window:** ticking a task box, scanning the phone code, a voice message sent after leaving its chat, and a
+  file opening with the new Windows mark. Please say if one of them does not behave as described.
+
 ## v0.81.2 "Friday 13th" — BETA (2026-11-12)
 
 Writing in an archived chat now takes it out of the archive. Until now an archived chat stayed hidden

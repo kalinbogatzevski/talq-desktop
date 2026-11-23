@@ -84,6 +84,45 @@ const char *pauseName(FolderSyncPause p)
     return "?";
 }
 
+const char *triggerName(FolderSyncController::Trigger t)
+{
+    using T = FolderSyncController::Trigger;
+    switch (t) {
+    case T::Login: return "login";
+    case T::Activation: return "activation";
+    case T::Deactivation: return "deactivation";
+    case T::Edit: return "edit";
+    case T::Reachability: return "reachability";
+    case T::Poll: return "poll";
+    case T::Backoff: return "backoff";
+    case T::SlowStep: return "slow-step";
+    }
+    return "?";
+}
+
+const char *refusalName(talq::EnableRefusal why)
+{
+    switch (why) {
+    case talq::EnableRefusal::ServerUnsupported: return "server-unsupported";
+    case talq::EnableRefusal::SignInRefused: return "sign-in-refused";
+    case talq::EnableRefusal::CouldNotReach: return "could-not-reach";
+    }
+    return "?";
+}
+
+// The class of the cycle's last HTTP answer, for its summary line: "-" when no answer arrived,
+// net-error when a request ended with no HTTP status at all (no connection, a timeout).
+QString httpClass(int status)
+{
+    if (status < 0)
+        return QStringLiteral("-");
+    if (status == 0)
+        return QStringLiteral("net-error");
+    if (status < 100 || status > 599)
+        return QStringLiteral("other");
+    return QString::number(status / 100) + QStringLiteral("xx");
+}
+
 // The status of a finished reply as classifyDav reads it. A 2xx whose transfer did not complete
 // (the connection dropped mid-body, a timeout after the headers) is NOT a success: the body is cut
 // short, and an empty or truncated body would read as "nobody wrote yet" and be overwritten. It is
@@ -130,6 +169,7 @@ FolderSyncController::FolderSyncController(FolderStore *store, ApiClient *api, Q
 
 FolderSyncController::~FolderSyncController()
 {
+    logCycleEnd("cancelled");   // reads only this object's members: the store may be gone already
     ++m_gen;   // a callback still in flight answers to nobody
     abortReply();
 }
@@ -185,6 +225,7 @@ void FolderSyncController::abortReply()
 // so the abort's own finished() (and a gate poll still queued) is ignored.
 void FolderSyncController::resetSession()
 {
+    logCycleEnd("cancelled");   // a detach or a new attach mid-cycle (nothing, when none is in flight)
     ++m_gen;
     abortReply();
     stopTimers();
@@ -451,6 +492,7 @@ void FolderSyncController::disable()
 // the saved() hook keeps working while off and a re-enable is a trusted merge.
 void FolderSyncController::turnOff()
 {
+    logCycleEnd("cancelled");   // the switch turned off mid-cycle (refuseEnable has logged its own)
     ++m_gen;   // a late answer, a conflict wait, the replace gap or a held apply answers to nobody
     abortReply();
     stopTimers();   // a disabled computer never contacts the server
@@ -495,6 +537,7 @@ void FolderSyncController::refuseEnable(talq::EnableRefusal why)
           << (why == talq::EnableRefusal::ServerUnsupported ? "the server does not honour conditional saves"
               : why == talq::EnableRefusal::SignInRefused   ? "the saved sign-in was refused"
                                                             : "the server could not be reached"));
+    logCycleEnd("switch-refused", refusalName(why));
     turnOff();
     // A stateChanged slot may turn the switch on again (or log out) right here. That new attempt
     // answers for itself; a false sent after it would make MainWindow put the switch back off while
@@ -602,6 +645,13 @@ void FolderSyncController::startCycle(CycleOrigin origin, Trigger trigger)
     m_loginTimer.stop();
     m_cycle = Cycle();   // nothing of an earlier cycle reaches this one, nor the probe before it
     m_inFlight = true;   // one chain from here: a slot that presses Sync now meanwhile starts nothing
+    // From here every way this attempt ends logs its one summary line (logCycleEnd).
+    m_cycleLog = CycleLog();
+    m_cycleLog.open = true;
+    m_cycleLog.origin = origin;
+    m_cycleLog.trigger = trigger;
+    m_cycleLog.clock.start();
+    m_cycleLog.requestsAtStart = m_requestsSent;
 
     // D28: on the toggle path with the marker present, enabled=true is written at once (before the
     // first cycle, before the account check).
@@ -624,6 +674,12 @@ void FolderSyncController::startCycle(CycleOrigin origin, Trigger trigger)
             refuseEnable(talq::EnableRefusal::CouldNotReach);
             return;
         }
+        // One line for a run of these, not one per trigger: no attempt starts, so no gap holds the
+        // next trigger back (every activation would log one).
+        if (m_state == FolderSyncState::Waiting && m_accountNotReady)
+            m_cycleLog.open = false;
+        else
+            logCycleEnd("account-not-ready");
         setState(FolderSyncState::Waiting, FolderSyncPause::None, /*accountNotReady*/ true);
         return;
     }
@@ -735,6 +791,7 @@ void FolderSyncController::onProbeReply(QNetworkReply *reply, quint64 gen, int s
     // The cycle's own reading of an answer: a 2xx whose transfer broke off is Transient, never a 2xx.
     int status = 0;
     const DavOutcome outcome = outcomeOf(reply, &status);
+    m_cycleLog.lastStatus = status;
     // Step 1 may have made the scratch file even when its answer is not a clean 2xx: a transfer that
     // broke off after the server stored it, a timeout, or a 5xx from a proxy after the server wrote.
     // Every such answer (a 2xx, or the table's Transient) owes the best-effort DELETE. A 412 (the
@@ -961,6 +1018,8 @@ void FolderSyncController::onGetFinished(QNetworkReply *reply, quint64 gen)
     m_cycle.getAnswered.start();
     if (m_reply == reply)
         m_reply = nullptr;
+    // Read here, before the redirect and the size abort return: their status is the answer too.
+    m_cycleLog.lastStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (!storeIsOurs()) {
         endQuietly("the folder store left this account while the download was out; nothing is used");
         return;
@@ -1180,6 +1239,7 @@ void FolderSyncController::onPutFinished(QNetworkReply *reply, quint64 gen)
     }
     int status = 0;
     const DavOutcome outcome = outcomeOf(reply, &status);
+    m_cycleLog.lastStatus = status;
     switch (outcome) {
     case DavOutcome::Ok:
     case DavOutcome::Created:
@@ -1367,6 +1427,9 @@ void FolderSyncController::recordSuccess()
 {
     const talq::StateDiff diff = talq::diffStates(m_cycle.local, m_cycle.merged);
     const bool uploaded = m_cycle.uploaded;
+    // Logged first: the rewrite below can end the cycle another way (a slot detaching on saved()).
+    const bool applied = !talq::sameFolderState(m_cycle.merged, m_cycle.local);
+    logCycleEnd(uploaded && applied ? "uploaded+applied" : uploaded ? "uploaded" : applied ? "applied" : "no-change");
     m_base = m_cycle.merged;
     m_sessionTrusted = true;
     m_lastSyncedMs = QDateTime::currentMSecsSinceEpoch();   // display only (D34)
@@ -1438,6 +1501,7 @@ void FolderSyncController::endPaused(FolderSyncPause reason)
     if (reason == FolderSyncPause::QuotaFull)
         m_slowStepTimer.start(timerMs(ladderWaitMs(kPastTheLadder)));
     TWARN("FolderSync: paused:" << pauseName(reason));
+    logCycleEnd("paused", pauseName(reason));
     setState(FolderSyncState::Paused, reason);
     emit problemRaised(reason);
 }
@@ -1455,6 +1519,7 @@ void FolderSyncController::endTransient(const char *why)
     TWARN("FolderSync: attempt failed:" << why << "- failures in a row:" << m_failures);
     m_backoff = true;
     m_backoffTimer.start(timerMs(ladderWaitMs(m_failures)));
+    logCycleEnd("failed");
     setState(FolderSyncState::Waiting);
     emit attemptFailed();
 }
@@ -1464,7 +1529,34 @@ void FolderSyncController::endQuietly(const char *why)
 {
     endFlight();
     TLOG("FolderSync:" << why);
+    logCycleEnd("ended");
     setState(FolderSyncState::Idle);
+}
+
+// The cycle's one summary line (see "LOGGING" in the header), once: nothing when no cycle is open.
+// Only this object's own enums and counters go into it (never m_cycle.path, the probe's path, the
+// scope or an ETag: they name the account), and it reads nothing else, so the destructor may call it
+// after the store is gone.
+void FolderSyncController::logCycleEnd(const char *outcome, const char *detail)
+{
+    if (!m_cycleLog.open)
+        return;
+    m_cycleLog.open = false;
+    const char *origin = "?";
+    switch (m_cycleLog.origin) {
+    case CycleOrigin::Button: origin = "sync-now"; break;
+    case CycleOrigin::SwitchOn: origin = "switch-on"; break;
+    case CycleOrigin::Automatic: origin = triggerName(m_cycleLog.trigger); break;
+    }
+    QString o = QString::fromLatin1(outcome);
+    if (detail)
+        o += QLatin1Char(':') + QString::fromLatin1(detail);
+    m_lastCycleLine = QStringLiteral("FolderSync: cycle outcome=%1 origin=%2 http=%3 requests=%4 ms=%5")
+                          .arg(o, QString::fromLatin1(origin), httpClass(m_cycleLog.lastStatus))
+                          .arg(m_requestsSent - m_cycleLog.requestsAtStart)
+                          .arg(m_cycleLog.clock.isValid() ? m_cycleLog.clock.elapsed() : 0);
+    ++m_cycleLinesLogged;
+    qInfo().noquote() << "[TalQ]" << m_lastCycleLine;
 }
 
 void FolderSyncController::setState(FolderSyncState state, FolderSyncPause pause, bool accountNotReady)

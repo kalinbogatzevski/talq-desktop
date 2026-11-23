@@ -90,6 +90,15 @@ public:
     QString myUserId() const { return m_myUserId; }
     void setMyUserId(const QString &id);
 
+    // The open room's part of "may a task box be ticked" (TaskListLogic.h): can
+    // the user post here, and is it Note to self (no edit age limit). Set by
+    // MainWindow::applyRoomGuards on every room switch and refresh.
+    void setTaskBoxRoom(bool roomAllowsPosting, bool noteToSelf)
+    {
+        m_taskRoomAllowsPosting = roomAllowsPosting;
+        m_taskNoteToSelf = noteToSelf;
+    }
+
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
     void setTheme(PainterTheme::Theme t);
@@ -177,6 +186,10 @@ signals:
     // The warning on an own message that did not send was clicked. tempId is the
     // pending message's negative id; the window offers Retry now / Discard.
     void retryRequested(int tempId, const QPoint &globalPos);
+    // A task-list box in an own, still editable message was clicked. `box` is
+    // the renderer's number for it and `wasChecked` the state the click saw;
+    // the window works out the edited text and sends it.
+    void taskBoxToggled(int messageId, int box, bool wasChecked);
     // Every local file of a drop, in the order given (a drop of several used to give one).
     void filesDropped(const QStringList &filePaths);
     void selectionModeChanged(bool active);
@@ -221,6 +234,12 @@ private:
     QString hitTestLink(const MessageLayout &ml, const QPointF &localPos) const;
     QString hitTestReaction(const MessageLayout &ml, const QPointF &localPos) const;
     int hitTestBodyCursor(const MessageLayout &ml, const QPointF &canvasPos) const;
+    // The task box under a canvas point, when this message's boxes may be
+    // ticked: its number and state. The glyph and the space after it count.
+    bool taskBoxAt(const MessageLayout &ml, const QPointF &canvasPos,
+                   int *box, bool *checked) const;
+    bool m_taskRoomAllowsPosting = true;
+    bool m_taskNoteToSelf = false;
 
     // ── Reaction pill geometry (single source for paintReactions AND
     // hitTestReaction — see ReactionLayout.h for why this must not fork) ──

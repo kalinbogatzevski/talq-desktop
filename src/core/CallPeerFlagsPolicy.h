@@ -1,11 +1,15 @@
 #pragma once
 
-// CallPeerFlagsPolicy -- two pure decisions about the OTHER person in a call:
+// CallPeerFlagsPolicy -- pure decisions about the OTHER person in a call:
 //
 //  1. decideRegisteredPeerFlags: which media flags a "peer joined the call"
-//     report may write onto that person's tile (audio/video mute state).
+//     report may write onto that person's tile (audio/video mute state), and
+//     the flags that report may then act on (subscribablePeerFlags,
+//     knownPeerFlags).
 //  2. shouldAdoptPeerWhileActive: when a call that is already Active must still
 //     adopt its 1:1 peer, so the REST discovery poll can stop.
+//  3. callPeerPollIntervalMs: how often that poll asks while nobody is adopted
+//     (a group call that went Active first is never adopted).
 //
 // No Qt -- see tests/call_peer_flags_policy_test.cpp. CallManager gathers the
 // facts (the poll row, the signaling server's flag cache, the subscriber maps)
@@ -35,6 +39,12 @@ namespace talq {
 struct PeerFlagsDecision {
     bool apply = false;   // write `flags` onto the tile's audio/video mute state
     int  flags = 0;
+    // `flags` is the poll's guess with nothing else known (a NEW tile, the
+    // signaling server's cache empty -- e.g. just cleared by a call or room
+    // (re)join). The guess carries no video bit, yet the peer's camera may well
+    // be on: the tile's video is then UNKNOWN (CallParticipant::markVideoUnknown),
+    // not "Camera off". A real report clears it.
+    bool videoUnknown = false;
 };
 
 // flagsSynthesized: the flags are not a report from the peer. The REST poll
@@ -50,14 +60,38 @@ struct PeerFlagsDecision {
 //   - the signaling server's flags win, because they track the peer's camera and
 //     microphone;
 //   - with none known, a NEW tile is seeded from the guess (audio is how a
-//     peer is first subscribed), an EXISTING tile is left alone.
+//     peer is first subscribed) with its video marked unknown, an EXISTING
+//     tile is left alone.
 inline PeerFlagsDecision decideRegisteredPeerFlags(bool flagsSynthesized, bool participantExisted,
                                                    int flags, int hpbFlags)
 {
     if (!flagsSynthesized) return { true, flags };
     if (hpbFlags != 0)     return { true, hpbFlags };
-    if (!participantExisted) return { true, flags };
+    if (!participantExisted) return { true, flags, /*videoUnknown*/true };
     return { false, 0 };
+}
+
+// The flags a report may SUBSCRIBE on (the group fallthrough in
+// handleParticipantJoined): what the tile was just given. An invented report
+// that left an existing tile alone starts nothing new; the periodic
+// subscribe-reconcile sweep still subscribes any tile that shows media. A NEW
+// tile seeded from the guess does subscribe: for a peer the signaling server
+// never announced, that guess is the only discovery there is.
+inline int subscribablePeerFlags(const PeerFlagsDecision &d)
+{
+    return d.apply ? d.flags : 0;
+}
+
+// The flags a report may MOVE A 1:1 CALL'S IDENTITY on (the #bug4 sibling
+// re-adopt): only what the peer or the signaling server actually said. The poll
+// invents audio for every row, an idle device of the same person included, so
+// its guess cannot tell a sibling that publishes from one that never will; with
+// the server silent it yields 0 (no media known). Reachable inside ONE poll
+// answer: the first row adopts, the second row (the same person's other device)
+// arrives before the first has a subscriber.
+inline int knownPeerFlags(bool flagsSynthesized, int flags, int hpbFlags)
+{
+    return flagsSynthesized ? hpbFlags : flags;
 }
 
 // A call that reached Active without ever recording its 1:1 peer (a ring with no
@@ -84,6 +118,33 @@ inline bool shouldAdoptPeerWhileActive(bool callActive, bool oneToOne, bool remo
 {
     return callActive && oneToOne && remotePeerUnset && !peerGraceActive
         && !joinerIsOwnUser && joinerHasSubscriber;
+}
+
+// The REST call-list poll stops once a peer is adopted. A GROUP call that reached
+// Active before the poll's first tick (rung from the conversation list, with a
+// fast publisher) never adopts anyone (shouldAdoptPeerWhileActive is 1:1 only),
+// so the poll asked every 3 s for the whole call: about 20 GETs a minute. Its
+// own job is to turn a row the signaling server never announced into a tile;
+// once every other row has one, later joiners come with the server's join
+// events, and the poll stays only as a slow backup for one that does not.
+//
+//  groupCall       a 1:1 keeps the fast rate: its peer is adopted on the next
+//                  tick after the stream request, and a peer returning from a
+//                  drop must be found inside the grace window.
+//  callActive      Outgoing/Connecting adopt the first joiner and stop the poll.
+//  restPromoted    the REST-evidence backstop is waiting for the HPB session and
+//                  times out a vanished peer after 10 s without a fresh tick.
+//  otherRows       rows of the call list that are not our own account.
+//  registeredRows  of those, rows that resolved to a signaling session with a tile.
+constexpr int kCallPeerPollFastMs = 3000;
+constexpr int kCallPeerPollSlowMs = 15000;
+
+inline int callPeerPollIntervalMs(bool groupCall, bool callActive, bool restPromoted,
+                                  int otherRows, int registeredRows)
+{
+    const bool settled = groupCall && callActive && !restPromoted
+                      && otherRows > 0 && registeredRows >= otherRows;
+    return settled ? kCallPeerPollSlowMs : kCallPeerPollFastMs;
 }
 
 } // namespace talq

@@ -41,6 +41,13 @@ public:
     QString peerClient() const { return m_peerClient; }
     bool audioMuted() const { return m_audioMuted; }
     bool videoMuted() const { return m_videoMuted; }
+    // Nobody has said whether this peer's camera is on: the tile was seeded from
+    // the REST poll's guess with the signaling server's flags unknown
+    // (talq::PeerFlagsDecision::videoUnknown). videoMuted() then reads true, so
+    // every decision that keys on it (the subscriber watchdogs) treats the peer
+    // as camera-off, as an unknown peer always was; only the stage differs: it
+    // shows frames that do arrive, and never says "Camera off" for it.
+    bool videoUnknown() const { return m_videoUnknown; }
     bool screenSharing() const { return m_screenSharing; }
     VideoFrameProvider *camera() const { return m_camera; }
     VideoFrameProvider *screen() const { return m_screen; }
@@ -58,19 +65,12 @@ public:
     void setDisplayName(const QString &v) { if (v.isEmpty() || m_displayName == v) return; m_displayName = v; emit changed(); }
     void setPeerId(const QString &v)      { if (m_peerId == v) return; m_peerId = v; emit changed(); }
     void setPeerClient(const QString &v)  { if (m_peerClient == v) return; m_peerClient = v; emit changed(); }
-    // Mute changes are logged (one line per CHANGE, not per call): until 2026-11-02 a
-    // tile could sit on "Camera off" for a whole call and nothing in the log said
-    // when or why it was muted.
-    void setAudioMuted(bool v)            { if (m_audioMuted == v) return; m_audioMuted = v;
-                                            qInfo().noquote() << "CallParticipant"
-                                                              << (m_isSelf ? QStringLiteral("self") : m_sessionId.left(8))
-                                                              << "audio muted ->" << v;
-                                            emit changed(); }
-    void setVideoMuted(bool v)            { if (m_videoMuted == v) return; m_videoMuted = v;
-                                            qInfo().noquote() << "CallParticipant"
-                                                              << (m_isSelf ? QStringLiteral("self") : m_sessionId.left(8))
-                                                              << "video muted ->" << v;
-                                            emit changed(); }
+    // Mute changes are logged, one line per CHANGE (CallParticipant.cpp).
+    void setAudioMuted(bool v);
+    // Any report of the video state, even one equal to the current value,
+    // ends videoUnknown().
+    void setVideoMuted(bool v);
+    void markVideoUnknown();
     void setScreenSharing(bool v)         { if (m_screenSharing == v) return; m_screenSharing = v; emit changed(); }
     void setConnState(ConnState v)        { if (m_connState == v) return; m_connState = v; emit changed(); }
     void setSpeaking(bool v)              { if (m_speaking == v) return; m_speaking = v; emit changed(); }
@@ -127,6 +127,7 @@ private:
     QString m_peerClient;
     bool m_audioMuted = true;
     bool m_videoMuted = true;
+    bool m_videoUnknown = false;
     bool m_screenSharing = false;
     VideoFrameProvider *m_camera = nullptr;
     // QPointer, not a raw pointer: the screen provider is owned by the screen

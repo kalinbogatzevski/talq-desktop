@@ -6,6 +6,7 @@
 #include "core/ShiftStatusService.h"
 #include "core/ConversationKind.h"
 #include "core/Talk25Rooms.h"
+#include "core/TooltipText.h"
 #include "EmojiTextRenderer.h"
 #include <QApplication>
 #include <QCursor>
@@ -759,7 +760,8 @@ bool SidebarPainter::event(QEvent *e)
             && !m_rows[row].isHeader()) {
             const ConversationLayout &cl = m_layouts[m_rows[row].layoutIndex];
             if (cl.nameElided && cl.nameRect.contains(he->pos())) {
-                QToolTip::showText(he->globalPos(), cl.displayName, this);
+                // The name comes from the server and a tooltip is rich text.
+                QToolTip::showText(he->globalPos(), talq::plainTooltipHtml(cl.displayName), this);
                 return true;
             }
         }
@@ -815,7 +817,7 @@ void SidebarPainter::mousePressEvent(QMouseEvent *event)
     // other row. The token (not the row index) is kept, because a model
     // refresh can re-lay the rows between press and move.
     m_swallowRelease = false;   // a stale flag must never eat a later click
-    m_lastReleaseWasFolderHeader = false;
+    m_lastReleaseWasHeader = false;
     m_pressPos = event->position().toPoint();
     m_pressRow = rowAtY(event->position().y());
     m_pressButton = event->button();
@@ -879,14 +881,14 @@ void SidebarPainter::startDrag(const QString &token)
 void SidebarPainter::mouseDoubleClickEvent(QMouseEvent *event)
 {
     // QWidget's default turns a double-click into a second mousePressEvent, and
-    // that press's release would run the click branch again: a folder header
-    // would open and shut in one double-click. Swallow it. (The tag header has
-    // the same quirk and is deliberately left alone; this only covers folders.)
-    // Decided by what the FIRST click did, not by where this one landed: that
-    // click may have closed a folder and scrolled a different row under the
-    // pointer.
-    if (m_lastReleaseWasFolderHeader) {
-        m_lastReleaseWasFolderHeader = false;
+    // that press's release would run the click branch again: a section header
+    // would open and shut in one double-click (and a TAG header would also send
+    // two PUT /tags/{id}/collapsed, net no change). Swallow it, for folder and
+    // tag headers alike. Decided by what the FIRST click did, not by where this
+    // one landed: that click may have closed a section and scrolled a
+    // different row under the pointer.
+    if (m_lastReleaseWasHeader) {
+        m_lastReleaseWasHeader = false;
         clearPressState();
         m_swallowRelease = true;
         event->accept();
@@ -901,7 +903,7 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
     const int pressRow = m_pressRow;
     const bool swallow = m_swallowRelease;
     m_swallowRelease = false;
-    m_lastReleaseWasFolderHeader = false;
+    m_lastReleaseWasHeader = false;
     clearPressState();
     if (swallow) {          // the tail of a drag, or the 2nd click of a double-click
         event->accept();
@@ -920,7 +922,7 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
     // folder. A click needs the press AND the release on this same header --
     // toggling is a layout change, so a press that wandered off must not fire.
     if (m_rows[row].isFolderHeader()) {
-        m_lastReleaseWasFolderHeader = true;     // see mouseDoubleClickEvent
+        m_lastReleaseWasHeader = true;     // see mouseDoubleClickEvent
         if (row == pressRow) {
             const int section = m_rows[row].folderIndex;
             if (event->button() == Qt::LeftButton) {
@@ -952,6 +954,7 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
     // devices. Right-click on a header does nothing (there is no per-section
     // context menu), rather than opening a conversation's menu.
     if (m_rows[row].isHeader()) {
+        m_lastReleaseWasHeader = true;     // see mouseDoubleClickEvent
         if (event->button() == Qt::LeftButton) {
             const int t = m_rows[row].tagIndex;
             if (t >= 0 && t < m_tags.size()) {
@@ -1648,6 +1651,20 @@ void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, bool
 // Scrollbar
 // ═══════════════════════════════════════════════════════
 
+QFont SidebarPainter::headerLabelFont() const
+{
+    // Shrunk in PIXELS: bodyFont() is pixel-sized, and pointSizeF() is -1 for
+    // such a font, so the old setPointSizeF(pointSizeF() * 0.82) was rejected
+    // ("QFont::setPointSizeF: Point size <= 0", on every paint) and the tag
+    // label was never shrunk.
+    QFont f = m_theme.bodyFont();
+    f.setPixelSize(qMax(9, qRound(m_theme.fontSizeNormal * 0.82)));
+    f.setWeight(QFont::DemiBold);
+    f.setCapitalization(QFont::AllUppercase);
+    f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+    return f;
+}
+
 void SidebarPainter::paintSectionHeader(QPainter *p, const talq::SidebarRow &row)
 {
     if (row.tagIndex < 0 || row.tagIndex >= m_tags.size())
@@ -1682,11 +1699,7 @@ void SidebarPainter::paintSectionHeader(QPainter *p, const talq::SidebarRow &row
     p->fillPath(tri, m_theme.textSecondary);
 
     // Eyebrow treatment, matching the app's section-label convention.
-    QFont f = m_theme.bodyFont();
-    f.setPointSizeF(f.pointSizeF() * 0.82);
-    f.setWeight(QFont::DemiBold);
-    f.setCapitalization(QFont::AllUppercase);
-    f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+    const QFont f = headerLabelFont();
     p->setFont(f);
     p->setPen(m_theme.textSecondary);
 
@@ -1760,15 +1773,8 @@ void SidebarPainter::paintFolderHeader(QPainter *p, const talq::SidebarRow &row,
     tri.closeSubpath();
     p->fillPath(tri, m_theme.textSecondary);
 
-    // Eyebrow label. The tag header shrinks bodyFont() with setPointSizeF(
-    // pointSizeF() * 0.82), but bodyFont() is PIXEL-sized and pointSizeF() is -1
-    // for such a font, so Qt rejects it ("Point size <= 0") and that label is
-    // never shrunk. Shrink in pixels here, where it takes effect.
-    QFont f = m_theme.bodyFont();
-    f.setPixelSize(qMax(9, qRound(m_theme.fontSizeNormal * 0.82)));
-    f.setWeight(QFont::DemiBold);
-    f.setCapitalization(QFont::AllUppercase);
-    f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+    // Eyebrow label, the same font as the tag header's.
+    const QFont f = headerLabelFont();
     p->setFont(f);
     p->setPen(m_theme.textSecondary);
 
@@ -1829,9 +1835,17 @@ void SidebarPainter::paintScrollbar(QPainter *p)
 QString SidebarPainter::avatarCacheKey(const QString &userId, const QString &token, int convType) const
 {
     // For 1:1 chats, use the userId. For groups, use the token (room avatar).
-    if (convType == 1 && !userId.isEmpty())
+    if (talq::avatarfetch::isPersonPicture(convType, userId))
         return QStringLiteral("user:") + userId;
     return QStringLiteral("room:") + token;
+}
+
+SidebarPainter::HeldAvatar SidebarPainter::cachedAvatarFor(const QString &userId,
+                                                           const QString &token,
+                                                           int convType) const
+{
+    const QString key = avatarCacheKey(userId, token, convType);
+    return HeldAvatar{m_avatarCache.value(key), m_avatarFetchedMs.value(key, 0)};
 }
 
 // Avatar cache freshness. No HTTP cache exists, so the server always returns the
@@ -1880,7 +1894,7 @@ void SidebarPainter::requestAvatar(const QString &userId, const QString &token, 
 
     // Build URL: user avatar for 1:1, room avatar for groups
     QString url;
-    if (convType == 1 && !userId.isEmpty()) {
+    if (talq::avatarfetch::isPersonPicture(convType, userId)) {
         url = QStringLiteral("/index.php/avatar/") + userId + QStringLiteral("/64");
     } else {
         // Cache-buster: a hardcoded ?v=1 never changes, so any HTTP cache in the

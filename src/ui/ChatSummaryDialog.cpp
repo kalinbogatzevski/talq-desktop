@@ -66,6 +66,9 @@ void ChatSummaryDialog::requestSummary()
                 const QString err = data.value(QStringLiteral("error")).toString();
                 if (err == QLatin1String("ai-no-provider"))
                     fail(tr("This server has no summarising service set up."));
+                else if (err == QLatin1String("classified"))
+                    // Talk 25 refuses to send a classified conversation to the AI service.
+                    fail(tr("A classified conversation can't be summarised."));
                 else if (status == 204)
                     // 204 = nothing to summarise. Not an error; say so plainly.
                     fail(tr("There is nothing new to summarise here."));

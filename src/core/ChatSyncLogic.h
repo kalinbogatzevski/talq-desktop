@@ -98,4 +98,49 @@ inline std::vector<std::string> selfReactionsAfter(std::vector<std::string> self
     return self;
 }
 
+// H8 — a room's last entry that nobody reads as a message. In a ONE-TO-ONE room Talk makes a
+// reaction the room's lastMessage and counts it as 1 unread (verified live: in a group room it does
+// neither); the chat view never shows it as a row, so a read marker posted at the newest VISIBLE
+// message leaves the room at "1 unread". Not readable: any system row (a reaction is messageType
+// "system", systemMessage "reaction"), a deleted comment, and our own message (never unread for us).
+// Everything else, an unknown type included, counts as readable, which never skips anything.
+inline bool lastEntryIsReadable(const std::string &messageType, const std::string &systemMessage,
+                                bool own)
+{
+    if (own)
+        return false;
+    if (!systemMessage.empty())
+        return false;
+    return messageType != "system" && messageType != "comment_deleted";
+}
+
+// H8 — the id markAsRead posts (H1's forward-only gate is applied to it afterwards).
+//   lastVisibleId       newest server id in the chat view
+//   roomLastId          the room list's lastMessage id (0 = unknown)
+//   roomLastIsReadable  lastEntryIsReadable() of that entry (true when unknown)
+//   topicFiltered       the view is NOT the whole room (a topic is open, or topic messages are hidden)
+//   pollSeenUpTo        newest id the open chat's live poll has delivered (0 = not polling this room)
+// The marker moves past the visible messages to roomLastId only when every entry in between is one
+// the view does not show: the view is the whole room (so nothing was filtered out), the last entry is
+// not readable, and the poll has already delivered everything up to it (every delivered row is
+// either on screen or a reaction/edit/deletion/call row). A message the room list knows before the
+// poll does is therefore never skipped.
+inline int readMarkerTarget(int lastVisibleId, int roomLastId, bool roomLastIsReadable,
+                            bool topicFiltered, int pollSeenUpTo)
+{
+    if (lastVisibleId <= 0 || topicFiltered || roomLastId <= lastVisibleId
+        || roomLastIsReadable || pollSeenUpTo < roomLastId)
+        return lastVisibleId;
+    return roomLastId;
+}
+
+// H8 — the triggers that bring nothing new to the screen (a poll batch of only reactions/edits/
+// system rows, a refresh of the room list) may move the marker only across rows the view does not
+// show: never while the server still holds a VISIBLE message unread. That is exactly what "Mark as
+// unread" leaves behind (marker below a message on screen), so these triggers cannot undo it.
+inline bool hiddenRowsReadAllowed(int lastVisibleId, int knownServerRead)
+{
+    return lastVisibleId > 0 && knownServerRead >= lastVisibleId;
+}
+
 } // namespace talq

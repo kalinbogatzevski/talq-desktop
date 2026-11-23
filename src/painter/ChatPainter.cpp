@@ -30,6 +30,7 @@
 #include "core/AvatarFetchPolicy.h"
 #include "core/LinkPreviewService.h"
 #include "core/ReactionWhoService.h"
+#include "core/TaskListLogic.h"
 #include "core/EmojiData.h"
 #include "core/SignalingClient.h"
 #include "painter/ReactionLayout.h"
@@ -859,6 +860,15 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
             return QStringLiteral("codecopy:%1:%2").arg(ml.messageId).arg(chip.blockIndex);
     }
 
+    // Task-list box in an own, still editable message: tick / untick it.
+    // Integers only (message id, the renderer's box number, the state seen).
+    {
+        int box = -1;
+        bool checked = false;
+        if (taskBoxAt(ml, canvasPos, &box, &checked))
+            return QStringLiteral("task:%1:%2:%3").arg(ml.messageId).arg(box).arg(checked ? 1 : 0);
+    }
+
     // Link-preview card -> the address the sender typed. It goes out as a plain
     // "link:" token, so the one http/https check at dispatch covers it and a card
     // can never open anything a bare link in the same message could not.
@@ -1616,10 +1626,11 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
             QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
             int idx = layoutIndexAtY(canvasPos.y());
             if (isOnBodyText(canvasPos, idx)) {
-                // Don't start text selection if clicking a link
+                // Don't start text selection if clicking a link (or a task box,
+                // which is a control like a link)
                 const auto &ml = m_layouts[idx];
                 QString link = hitTestLink(ml, canvasPos);
-                if (link.isEmpty()) {
+                if (link.isEmpty() && !m_pressHit.startsWith(QLatin1String("task:"))) {
                     int cursorPos = hitTestBodyCursor(ml, canvasPos);
                     if (cursorPos >= 0) {
                         m_textAnchorSet = true;
@@ -1878,6 +1889,17 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                 // decide what becomes a link at all. A link card is http(s) only.
                 if (talq::markdown::isOpenableLinkUrl(url))
                     emit linkActivated(url);
+            } else if (hit.startsWith(QLatin1String("task:"))) {
+                // Only when the release is still on the same box of the same
+                // message in the same state: a scroll, a re-layout or the
+                // server's echo between press and release cancels the tick.
+                const QStringList tparts = hit.mid(5).split(QLatin1Char(':'));
+                bool okId = false, okBox = false;
+                const int tMsgId = tparts.size() == 3 ? tparts[0].toInt(&okId) : 0;
+                const int tBox = tparts.size() == 3 ? tparts[1].toInt(&okBox) : -1;
+                if (okId && okBox && tMsgId > 0 && tBox >= 0
+                    && hitTestAt(event->position().x(), event->position().y()) == hit)
+                    emit taskBoxToggled(tMsgId, tBox, tparts[2] == QLatin1String("1"));
             } else if (hit.startsWith("reaction:")) {
                 QStringList rparts = hit.mid(9).split(":");
                 if (rparts.size() >= 2)
@@ -2281,6 +2303,60 @@ int ChatPainter::hitTestBodyCursor(const MessageLayout &ml, const QPointF &canva
         || bodyLocal.x() > ml.bodyRect.width() || bodyLocal.y() > ml.bodyRect.height())
         return -1;
     return ml.bodyDoc->documentLayout()->hitTest(bodyLocal, Qt::FuzzyHit);
+}
+
+bool ChatPainter::taskBoxAt(const MessageLayout &ml, const QPointF &canvasPos,
+                            int *box, bool *checked) const
+{
+    using namespace talq::tasklist;
+    if (!ml.bodyDoc || ml.bodyRect.isNull()) return false;
+
+    TaskBoxGate g;
+    g.own = ml.isOwn;
+    g.system = ml.isSystem;
+    g.messageId = ml.messageId;
+    g.pending = ml.sendStatus == QLatin1String("sending")
+                || ml.sendStatus == QLatin1String("failed");
+    g.hasFile = ml.hasFile;
+    g.pollId = ml.pollId;
+    g.selectionMode = m_selectionMode;
+    g.roomAllowsPosting = m_taskRoomAllowsPosting;
+    g.noteToSelf = m_taskNoteToSelf;
+    g.timestampSecs = ml.timestamp;
+    g.nowSecs = QDateTime::currentSecsSinceEpoch();
+    if (!taskBoxesTickable(g)) return false;
+
+    const QPointF bodyLocal(canvasPos.x() - ml.bodyRect.x(), canvasPos.y() - ml.bodyRect.y());
+    if (bodyLocal.x() < 0 || bodyLocal.y() < 0
+        || bodyLocal.x() > ml.bodyRect.width() || bodyLocal.y() > ml.bodyRect.height())
+        return false;
+    // ExactHit: the character UNDER the point, not the nearest caret position.
+    const int pos = ml.bodyDoc->documentLayout()->hitTest(bodyLocal, Qt::ExactHit);
+    if (pos < 0) return false;
+    const QTextBlock b = ml.bodyDoc->findBlock(pos);
+    // Only a block the renderer numbered is a task item; its box is the first
+    // character. A U+2610 typed anywhere else has no number.
+    if (!b.isValid() || b.userState() < 0) return false;
+    const QString t = b.text();
+    int glyphLen = 0;
+    bool isChecked = false;
+    if (!t.isEmpty() && t.at(0).unicode() == kBoxOpen) {
+        glyphLen = 1;
+    } else if (t.size() >= 2 && t.at(0).unicode() == kBoxTicked
+               && t.at(1).unicode() == kTextPresentation) {
+        glyphLen = 2;
+        isChecked = true;
+    } else {
+        return false;
+    }
+    // The glyph, and the space after it: the glyph alone is a ~10 px target.
+    const int off = pos - b.position();
+    if (off < 0 || off > glyphLen) return false;
+    if (off == glyphLen && (t.size() <= glyphLen || t.at(glyphLen) != QLatin1Char(' ')))
+        return false;
+    *box = b.userState();
+    *checked = isChecked;
+    return true;
 }
 
 bool ChatPainter::isOnBodyText(const QPointF &canvasPos, int layoutIdx) const
@@ -2784,8 +2860,11 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
             if (info.startsWith("TalQ")) {
                 QFontMetricsF fm(m_theme.nameFont());
                 qreal nameW = fm.horizontalAdvance(ml.actorName);
+                // In pixels: nameFont() is pixel-sized, so pointSizeF() is -1
+                // and "pointSizeF() - 1.5, at least 7" was always a fixed 7 pt
+                // that ignored the font scale. 2 px smaller than the name.
                 QFont tagFont = m_theme.nameFont();
-                tagFont.setPointSizeF(qMax(7.0, tagFont.pointSizeF() - 1.5));
+                tagFont.setPixelSize(qMax(9, m_theme.fontSizeSmall - 2));
                 p->setFont(tagFont);
                 p->setPen(m_theme.textMuted);
                 QRectF tagRect = nr.adjusted(nameW + 8, 0, 200, 0);

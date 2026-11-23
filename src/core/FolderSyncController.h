@@ -97,6 +97,17 @@
 // transfer timeout): Waiting, and the next trigger probes again. 401/403: Paused(AuthRefused). The
 // probe shares m_reply and the in-flight guard with the cycle (SettingUp), so one chain at a time.
 //
+// LOGGING. Every cycle that got past startCycle's guards ends with ONE summary line (logCycleEnd),
+// whatever ended it, the probe before it included:
+//   FolderSync: cycle outcome=<o> origin=<what started it> http=<class of the last answer> requests=<n> ms=<n>
+// outcome: no-change | uploaded | applied | uploaded+applied | paused:<pause> | failed | ended (the
+// line before says why) | switch-refused:<why> | account-not-ready (once for a run of them) |
+// cancelled (a disable, a detach or a new attach cut it short). http: 2xx..5xx, net-error (no HTTP
+// status: no connection, a timeout), or "-" (no answer arrived). Enums and counts only: never a
+// folder, a chat, a path, the account or the server. A trigger the gaps, the backoff, a pause or the
+// in-flight guard turn away starts no cycle and logs nothing. Logged with qInfo, so it stays when
+// Detailed logging is off. The pause, failure and probe lines are logged as before.
+//
 // Lifetimes. The store can be destroyed while this object is alive (MainWindow creates the store
 // first and Qt deletes children in creation order), and ~FolderStore flushes and emits saved(): both
 // pointers are QPointers and every slot checks that the store is still attached to OUR scope. Every
@@ -239,6 +250,11 @@ public:
     // Test seam: how often each trigger came in (fired, or was called), whatever it then decided.
     int triggerCount(Trigger t) const { return m_triggerCounts[static_cast<int>(t)]; }
 
+    // Test seam: the cycle summary lines logged so far (see "LOGGING" above), and the last one as
+    // logged, without the "[TalQ] " prefix.
+    int cycleLinesLogged() const { return m_cycleLinesLogged; }
+    QString lastCycleLine() const { return m_lastCycleLine; }
+
     // Test seam: the timers armed right now, each with the interval it was armed with (-1: not armed).
     // The poll repeats while the switch is on and attached; the others are single-shot.
     struct ArmedTimers {
@@ -327,6 +343,18 @@ private:
         bool created = false;             // step 1 made the file: a DELETE is owed when the probe ends
     };
 
+    // The summary line the cycle in flight owes (see "LOGGING" above). Opened by startCycle once the
+    // guards held; the first end that logs it closes it. Not part of m_cycle or m_probe: beginCycle
+    // resets m_cycle after a probe, and the line covers both.
+    struct CycleLog {
+        bool open = false;
+        CycleOrigin origin = CycleOrigin::Automatic;
+        Trigger trigger = Trigger::Poll;   // Automatic only
+        QElapsedTimer clock;
+        int requestsAtStart = 0;
+        int lastStatus = -1;               // the last answer's HTTP status; -1: no answer yet, 0: none
+    };
+
     bool storeIsOurs() const;
     talq::BaseInputs baseInputsNow() const;
     talq::BaseChoice baseChoiceNow() const;
@@ -370,6 +398,7 @@ private:
     void endPaused(talq::FolderSyncPause reason);
     void endTransient(const char *why);
     void endQuietly(const char *why);
+    void logCycleEnd(const char *outcome, const char *detail = nullptr);
     void abortReply();
     void resetSession();
     void setState(talq::FolderSyncState state, talq::FolderSyncPause pause = talq::FolderSyncPause::None,
@@ -421,6 +450,9 @@ private:
     int m_shrinkOf = 0;
     talq::SelfInconsistent412Tracker m_412;
     int m_requestsSent = 0;            // test seam: requestsSent()
+    CycleLog m_cycleLog;
+    int m_cycleLinesLogged = 0;        // test seam: cycleLinesLogged()
+    QString m_lastCycleLine;           // test seam: lastCycleLine()
 
     // The triggers (D18). Every timer is stopped by disable(), detach() and attach() (stopTimers).
     QTimer m_loginTimer;               // single-shot, loginDelayMs after attach(true)

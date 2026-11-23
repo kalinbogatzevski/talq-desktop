@@ -40,4 +40,22 @@ inline ScheduleRefusal classifyScheduleFailure(int status, const std::string &er
     return ScheduleRefusal::Unknown;
 }
 
+// Whether a refused scheduled REPLY is armed as a reply again when its text goes back into the box.
+// The send outbox keeps a failed message's reply; a refused schedule used to drop it, so Enter then
+// posted the text as a plain top-level message (and in a one-to-one bot room put the bot's @-mention
+// in front, which only a reply skips). It is armed again unless:
+//   - it was not a reply (failedReplyToId is 0);
+//   - the refusal is ABOUT the reply (the message is gone, or may not be replied to from here): the
+//     same reply would be refused again, and the reason the user is shown says why it went;
+//   - the text did not go back into the open room's box (it became another room's draft, which
+//     holds text only, or went to the clipboard because the box holds an edit);
+//   - the user has armed a reply of their own since (armedReplyToId): theirs is what the box is now.
+inline bool rearmReplyAfterRefusal(ScheduleRefusal why, bool restoredToComposer,
+                                   int failedReplyToId, int armedReplyToId)
+{
+    if (failedReplyToId <= 0 || !restoredToComposer || armedReplyToId != 0)
+        return false;
+    return why != ScheduleRefusal::ReplyGone && why != ScheduleRefusal::ReplyForbidden;
+}
+
 } // namespace talq

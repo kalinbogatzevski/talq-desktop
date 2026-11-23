@@ -26,7 +26,13 @@ public:
 
     QString conversationUserId() const { return m_conversationUserId; }
     void setConversationUserId(const QString &v);
-    void setAvatarImage(const QImage &img);
+    // A picture the chat list already holds for the conversation just opened, and
+    // when the list fetched it (0 = never, or marked stale by a window activation).
+    // It is stored under the key of the header's CURRENT type, user id and token, so
+    // call it after all three are set. It is taken only when the header holds no
+    // picture under that key or an older one, and keeps the list's stamp, so a
+    // stale picture is still refreshed on time.
+    void setAvatarImage(const QImage &img, qint64 fetchedMs);
 
     int conversationType() const { return m_conversationType; }
     void setConversationType(int v);
@@ -147,18 +153,16 @@ private:
     void clearHoverState();                   // drop hover + pressed + tooltip
 
     // ── Avatar loading ──
-    QImage fetchAvatar(const QString &userId);
-    void requestAvatar(const QString &userId);
-    // The key of every avatar map below (cache, pending, fetched-at). The cache
-    // holds PRE-MASKED pixels, so the shape is part of the key: an entry under
-    // a "c:" key is a circle, under a "sq:" key a rounded square, and a lookup
-    // for the open conversation uses the shape of THAT conversation's type. The
-    // plain user id was not enough: a group's "user id" is the room's name
-    // (ActorIdRole is Conversation::name), so a group called "alice" and the
-    // 1:1 with user "alice" shared one entry. Two GROUPS with the same name
-    // still share one (the key carries no token); that is older than the shape
-    // work and is not addressed here.
-    static QString avatarKey(const QString &userId, bool groupShape);
+    QImage fetchAvatar();
+    void requestAvatar();
+    // The key of every avatar map below (cache, pending, fetched-at) for the
+    // conversation open NOW: talq::avatarfetch::headerCacheKey(type, user id,
+    // token). It names the shape the pixels were masked with and what was
+    // downloaded: a person by user id, a room by TOKEN. A room used to be named
+    // by its NAME (a group's "user id" is ActorIdRole, which is
+    // Conversation::name), so two group chats with the same name shared one
+    // picture: open one, then the other, and the second showed the first's.
+    QString avatarKey() const;
     QHash<QString, QImage> m_avatarCache;
     // key -> when the download in flight for it began (believed only for
     // talq::avatarfetch::kPendingGiveUpMs; see core/AvatarFetchPolicy.h).

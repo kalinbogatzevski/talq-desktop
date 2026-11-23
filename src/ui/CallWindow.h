@@ -72,6 +72,8 @@ private:
     void toggleFullscreen();
     void onScreenChanged();   // #5 — re-lay-out the stage on a cross-DPI monitor move
     void pickShareTarget();
+    QRect restorableGeometry() const;   // the normal geometry, never the maximized one
+    void keepFrameOnScreen();           // the framed window's title bar in reach, now and soon
 
     CallManager *m_call;
     ApiClient *m_api;

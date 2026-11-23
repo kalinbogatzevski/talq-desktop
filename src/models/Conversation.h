@@ -52,6 +52,12 @@ public:
     QJsonObject lastMessageParams;
     int lastMessageThreadId = 0;
     int lastMessageId = 0;           // 0 = none / unknown
+    // Whether that last entry is a message someone reads (core/ChatSyncLogic.h
+    // lastEntryIsReadable): false for a system row (a reaction, which Talk makes
+    // the lastMessage of a one-to-one room and counts as unread), a deleted
+    // comment, or our own message. TRUE when unknown (no lastMessage), which
+    // never lets the read marker skip anything.
+    bool lastMessageReadable = true;
     qint64 lastActivity = 0;
     int lastReadMessage = 0;
     int participantType = 0;

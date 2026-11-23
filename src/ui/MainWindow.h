@@ -17,6 +17,7 @@
 #include "core/FolderLogic.h"
 #include "core/FolderSyncNotices.h"
 #include "core/UpdateInstallGatePolicy.h"
+#include "core/VoiceRoomPolicy.h"
 #include "painter/PainterTheme.h"
 
 class ApiClient;
@@ -144,6 +145,9 @@ private:
     void noteInstallGateChange(const talq::InstallGateInputs &gates);
     // Unsent composer text in ANY conversation, not only the open one.
     bool hasUnsentComposerText() const;
+    // The send outbox with each message's room looked up in the conversation list
+    // (talq::outboxHoldsInstall decides which of them hold the install).
+    QVector<talq::OutboxMessage> outboxForInstallGate() const;
     // Everything the install decisions in UpdateInstallGatePolicy.h look at,
     // gathered in one place so the call-state handler, the countdown tick and
     // the launch itself can never judge the same moment differently.
@@ -703,7 +707,18 @@ private:
     int m_replyToId = 0;
     QString m_replyToAuthor;
     QString m_replyToText;
+    // The reply bar's author and body for every message a scheduled reply was sent to, keyed by
+    // that message's id: a refused schedule arms the reply again (scheduleFailed), and the refusal
+    // can come back after the bar was cleared. Same message, same quote, so an entry is simply
+    // replaced; dropped on logout with the drafts.
+    struct ReplyQuote { QString author; QString bodyHtml; };
+    QHash<int, ReplyQuote> m_scheduledReplyQuotes;
     int m_editingMessageId = 0;
+    // Task-box ticks whose edit has not come back yet: message id -> when it was
+    // sent (ms). One per message: a second tick would be worked out from the text
+    // before the first one and undo it. Cleared by MessageListModel::editFinished;
+    // an entry older than kTaskTickStaleMs is not believed.
+    QHash<int, qint64> m_taskTickInFlight;
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
@@ -722,6 +737,20 @@ private:
     // into the cache dir, so replaying a voice message costs no network.
     AudioPlayer *m_audio = nullptr;
     VoiceRecorder *m_recorder = nullptr;
+    // Where the recording in progress goes: the room and topic open when it was STARTED
+    // (VoiceRoomPolicy.h), with the names its toast needs once that room may be gone.
+    talq::voice::Place m_voiceStart;
+    QString m_voiceRoomName, m_voiceTopicTitle;
+    // What the user will see once a stop in progress is done (the room they are going to when a
+    // navigation ended it); read by the finished handler. Set only for the length of endVoiceRecording.
+    talq::voice::Place m_voiceOpenAtStop;
+    bool m_voiceStopping = false;
+    // Stop the recording (if any) and let VoiceRoomPolicy route it; `openAfter` is what will be on
+    // screen. A failure is reported from the event loop, never inside the navigation that ended it.
+    void endVoiceRecording(const talq::voice::Place &openAfter);
+    // The start room is gone (left, deleted, no longer listed): discard the recording, say so.
+    void discardVoiceRecordingRoomGone();
+    void sayVoiceRoute(talq::voice::Route route);
     QHash<int, QString> m_audioCache;
     QSet<int> m_audioFetching;
     void playAudioAttachment(int fileId, const QString &fileName,

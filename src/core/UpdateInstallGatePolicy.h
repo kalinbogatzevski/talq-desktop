@@ -33,6 +33,8 @@
 #include <QHash>
 #include <QSet>
 #include <QString>
+#include <QStringList>
+#include <QVector>
 #include <QtGlobal>
 #include <string>
 
@@ -41,6 +43,15 @@ namespace talq {
 // ---------------------------------------------------------------------------
 // Unsent drafts
 // ---------------------------------------------------------------------------
+
+// Whether a composer's text is something the user would lose. Spaces and line
+// breaks alone are not: Send ignores them, and a stray newline left in a room
+// held every automatic install for the rest of the session while the log line
+// (which trimmed) named no draft at all.
+inline bool isUnsentText(const QString &text)
+{
+    return !text.trimmed().isEmpty();
+}
 
 // Unsent text anywhere in the app. The open conversation is judged by its live
 // composer only. Entering a room moves its draft out of the map and into the
@@ -51,13 +62,28 @@ inline bool hasUnsentComposerText(const QString &openComposerText,
                                   const QHash<QString, QString> &drafts,
                                   const QString &openConversationToken)
 {
-    if (!openComposerText.isEmpty())
+    if (isUnsentText(openComposerText))
         return true;
     for (auto it = drafts.cbegin(); it != drafts.cend(); ++it) {
-        if (it.key() != openConversationToken && !it.value().isEmpty())
+        if (it.key() != openConversationToken && isUnsentText(it.value()))
             return true;
     }
     return false;
+}
+
+// The rooms whose draft holds the install, sorted, for the log: by the same rule
+// as hasUnsentComposerText, so the line names every room that holds it. Tokens
+// only -- never the text.
+inline QStringList roomsWithUnsentDrafts(const QHash<QString, QString> &drafts,
+                                         const QString &openConversationToken)
+{
+    QStringList rooms;
+    for (auto it = drafts.cbegin(); it != drafts.cend(); ++it) {
+        if (it.key() != openConversationToken && isUnsentText(it.value()))
+            rooms.append(it.key());
+    }
+    rooms.sort();
+    return rooms;
 }
 
 // What the composer text was bound to when the room was left.
@@ -128,15 +154,46 @@ inline QString mergeRestoredText(const QString &current, const QString &restored
 enum class RestoreTarget {
     Composer,    // the room is open and its box takes text: it is typed back in
     RoomDraft,   // another room is open now: it becomes that room's draft
-    Clipboard,   // the room is open but its box holds an edit buffer, which must not be mixed with it
+    Clipboard,   // the room is open but its box is taken (boxIsTaken): nothing in it is touched
 };
 
+// What the open room's box holds when refused text comes back to it. A refusal can arrive long
+// after the request (a slow or dead connection), and the user goes on writing meanwhile.
+struct RestoreBox {
+    bool editing = false;      // an edit buffer: an existing message's text
+    bool stagedFile = false;   // a file is staged, or a pasted image is being prepared: the text is its caption
+    bool hasText = false;      // something is typed
+    int  armedReplyToId = 0;   // the message the box replies to now; 0 = none
+};
+
+// Whether typing the refused text back into the open box would change what the user is writing
+// there. Then it goes to the clipboard instead: the one place that never touches the box. The open
+// room's draft is not such a place -- the box IS that room's draft, and leaving the room replaces
+// or removes the entry (stashDraftOnLeave), so text parked there would be lost without a word.
+//   - an edit buffer: added text would be sent as an edit of an existing message;
+//   - a staged file: added text would become the file's caption;
+//   - a reply armed to ANOTHER message (or to one while the refused text was a plain message): the
+//     refused text would be sent as part of that reply; a reply to the same message is fine;
+//   - text typed since, no reply armed, and the refused text would come back AS a reply
+//     (`comesBackAsReply`, rearmReplyAfterRefusal): arming the reply again would turn what the user
+//     has typed since into a reply as well.
+// Plain text typed since, with a plain refused message, is not taken: mergeRestoredText adds the
+// restored text after it and never overwrites it.
+inline bool restoreBoxIsTaken(const RestoreBox &box, int failedReplyToId, bool comesBackAsReply)
+{
+    if (box.editing || box.stagedFile)
+        return true;
+    if (box.armedReplyToId != 0)
+        return box.armedReplyToId != failedReplyToId;
+    return comesBackAsReply && box.hasText;
+}
+
 inline RestoreTarget restoreTargetFor(const QString &roomToken, const QString &openRoomToken,
-                                      bool composerIsEditing)
+                                      bool boxIsTaken)
 {
     if (roomToken != openRoomToken)
         return RestoreTarget::RoomDraft;
-    return composerIsEditing ? RestoreTarget::Clipboard : RestoreTarget::Composer;
+    return boxIsTaken ? RestoreTarget::Clipboard : RestoreTarget::Composer;
 }
 
 // After a successful conversation-list refresh: drop drafts for rooms that
@@ -152,6 +209,51 @@ inline void dropDraftsForUnlistedRooms(QHash<QString, QString> &drafts,
         else
             it = drafts.erase(it);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The send outbox
+// ---------------------------------------------------------------------------
+
+// One message in the send outbox (MessageListModel, SendRetryPolicy.h): composer
+// text that was sent and that the server has not confirmed. It lives in memory
+// only, so a restart throws it away.
+struct OutboxMessage {
+    QString roomToken;
+    qint64  sentAtMs = 0;       // client clock
+    bool    givenUp = false;    // marked permanent: a refusal that is never retried on its own
+                                // (401/403/404/412/413), the attempt budget spent, or a history
+                                // window that could not prove the send. Only Retry continues it.
+    bool    inFlight = false;   // an attempt is waiting for its answer
+    int     lastStatus = 0;     // HTTP status of the last failed attempt; 0 = none, or no answer
+    bool    roomListed = true;  // its room is still in the conversation list. The model cannot
+                                // tell; the caller fills it in, and true is the side that holds.
+};
+
+// Whether it holds the automatic install.
+//
+// One still being retried does: it may yet be delivered, and if its room is
+// really gone it gives up on its own. One given up does too. Its failed bubble
+// still offers Retry and Discard and its text is nowhere else, yet it used not
+// to be counted, so an idle install dropped it without a word.
+//
+// Except a given-up message whose room has left the conversation list (deleted,
+// left, removed on another device): the user cannot open the room to see the
+// bubble any more, so it could only hold every install until logout -- the
+// reason dropDraftsForUnlistedRooms drops such a room's draft. The list is
+// replaced only by a successful refresh, so a room missing from it is really
+// gone. The entry itself is left alone, and holds again if the room comes back.
+inline bool outboxMessageHoldsInstall(const OutboxMessage &m)
+{
+    return !m.givenUp || m.roomListed;
+}
+
+inline bool outboxHoldsInstall(const QVector<OutboxMessage> &outbox)
+{
+    for (const OutboxMessage &m : outbox)
+        if (outboxMessageHoldsInstall(m))
+            return true;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,10 +373,13 @@ struct InstallGateInputs {
     bool   callActive = false;           // a call or a screen share is running
     qint64 msSinceLastCall = -1;         // -1: no call this session
     bool   unsentText = false;           // the composer, a draft in any conversation, or a sent
-                                         // message the server has not confirmed yet (in memory only)
+                                         // message the server has not confirmed yet (in memory
+                                         // only), a given-up one included (outboxHoldsInstall)
     bool   attachmentStaged = false;     // a file waiting in the composer to be sent
     bool   voiceRecording = false;       // a voice message is being recorded
-    bool   uploadInProgress = false;
+    bool   uploadInProgress = false;     // a file uploading or queued behind it. Uploads run one at
+                                         // a time (MessageListModel's file queue), and one that
+                                         // makes no progress is given up after its stall watchdog
     bool   mouseButtonHeld = false;      // a drag or a slow selection (see mouseButtonHeldNow)
 };
 
@@ -349,6 +454,87 @@ inline bool blockedOnlyByPostCallGrace(const InstallGateInputs &in, qint64 grace
         && !in.voiceRecording
         && !in.uploadInProgress
         && !in.mouseButtonHeld;
+}
+
+// ---------------------------------------------------------------------------
+// What the hold line names
+// ---------------------------------------------------------------------------
+// "Update: auto-install held by ..." also says, inside each gate, WHAT holds it:
+// the room, the file, how long. Never a message's text and never a caption.
+
+// "45 s", "12 min", "3 h 5 min". A clock that stepped back reads as 0 s.
+inline QString holdAgeText(qint64 ms)
+{
+    const qint64 s = qMax<qint64>(0, ms) / 1000;
+    if (s < 60)
+        return QStringLiteral("%1 s").arg(s);
+    const qint64 min = s / 60;
+    if (min < 60)
+        return QStringLiteral("%1 min").arg(min);
+    return QStringLiteral("%1 h %2 min").arg(min / 60).arg(min % 60);
+}
+
+// At most `shown` items, then how many more: a long list must not swamp the line.
+inline QString namedList(const QStringList &items, const QString &separator, int shown = 5)
+{
+    if (items.size() <= shown)
+        return items.join(separator);
+    return items.mid(0, shown).join(separator)
+         + QStringLiteral(" and %1 more").arg(items.size() - shown);
+}
+
+// The outbox messages that hold the install (outboxMessageHoldsInstall), each with
+// its room, where it stands, the last refusal and how long ago it was sent.
+inline QString describeOutboxHold(const QVector<OutboxMessage> &outbox, qint64 nowMs)
+{
+    QStringList parts;
+    for (const OutboxMessage &m : outbox) {
+        if (!outboxMessageHoldsInstall(m))
+            continue;
+        QString state = m.givenUp ? QStringLiteral("given up, waiting for Retry or Discard")
+                      : m.inFlight ? QStringLiteral("sending")
+                                   : QStringLiteral("waiting to be sent again");
+        if (m.lastStatus > 0)
+            state += QStringLiteral(", last HTTP %1").arg(m.lastStatus);
+        parts.append(QStringLiteral("room %1 (%2), sent %3 ago")
+                         .arg(m.roomToken, state, holdAgeText(nowMs - m.sentAtMs)));
+    }
+    if (parts.isEmpty())
+        return QString();
+    return QStringLiteral("%1 unsent message(s) in the send outbox: %2")
+        .arg(QString::number(parts.size()), namedList(parts, QStringLiteral("; "), 3));
+}
+
+// What is staged in the composer. A pasted image shows its bar while it is still
+// being encoded, before it has a file, so it must not read as a file.
+inline QString describeStagedAttachment(const QString &firstPath, int moreFiles, bool barUp)
+{
+    if (firstPath.isEmpty())
+        return barUp ? QStringLiteral("a pasted image still being prepared") : QString();
+    const int cut = qMax(firstPath.lastIndexOf(QLatin1Char('/')),
+                         firstPath.lastIndexOf(QLatin1Char('\\')));
+    QString s = QStringLiteral("file %1").arg(firstPath.mid(cut + 1));
+    if (moreFiles > 0)
+        s += QStringLiteral(" and %1 more").arg(moreFiles);
+    return s;
+}
+
+// The file uploading now, how far it is, and what waits behind it.
+inline QString describeUploadHold(const QString &fileName, double progress,
+                                  int batchIndex, int batchTotal, int queued)
+{
+    QStringList parts;
+    if (!fileName.isEmpty()) {
+        // One arg() call: a chained one would also replace a "%2" inside the file's name.
+        QString s = QStringLiteral("uploading %1 (%2%)")
+                        .arg(fileName, QString::number(int(qBound(0.0, progress, 1.0) * 100)));
+        if (batchTotal > 1)
+            s += QStringLiteral(", file %1 of %2").arg(batchIndex).arg(batchTotal);
+        parts.append(s);
+    }
+    if (queued > 0)
+        parts.append(QStringLiteral("%1 more file(s) queued").arg(queued));
+    return parts.join(QStringLiteral("; "));
 }
 
 // ---------------------------------------------------------------------------

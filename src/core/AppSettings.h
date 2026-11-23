@@ -18,6 +18,10 @@ namespace TalQUpdates {
     #include "brand_updates.inc"
     constexpr bool kUseGithub     = false;   // branded: private channel
     constexpr auto kGithubApi     = "";
+    // "TalQ for your phone" (Settings > Account): kPhoneAppUrl comes from the
+    // private store above and needs the user's own sign-in to open.
+    constexpr auto kPhoneAppHint  = QT_TRANSLATE_NOOP("PhoneAppDialog",
+        "Scan with your phone's camera, sign in, and tap the newest APK.");
 #else
     // Open-source build: auto-update from public GitHub Releases. No
     // credentials, no private infrastructure — the GitHub API and the
@@ -30,6 +34,12 @@ namespace TalQUpdates {
     constexpr auto kAssetBaseUrl  = "";
     constexpr auto kShareToken    = "";
     constexpr auto kSharePassword = "";
+    // "TalQ for your phone" (Settings > Account): the QR code's one link, the
+    // Android app's public releases. Empty hides the entry.
+    constexpr auto kPhoneAppUrl   =
+        "https://github.com/kalinbogatzevski/talq-android/releases/latest";
+    constexpr auto kPhoneAppHint  = QT_TRANSLATE_NOOP("PhoneAppDialog",
+        "Scan with your phone's camera and download the newest APK.");
 #endif
 }
 

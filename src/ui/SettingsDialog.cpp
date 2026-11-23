@@ -18,6 +18,7 @@
 #include "core/EncodeTier.h"
 #include "core/MicTester.h"
 #include "BgPreviewSource.h"
+#include "PhoneAppDialog.h"
 #include <QPainter>
 
 #ifndef TALQ_VERSION_NAME
@@ -2095,6 +2096,23 @@ QWidget *SettingsDialog::buildAccountTab()
     m_talqVersionLabel->setFont(infoFont);
     m_talqVersionLabel->setProperty("role", "secondary");
     bottomRow->addWidget(m_talqVersionLabel);
+
+    // "TalQ for your phone…": the about line's one link out, next to the version and
+    // away from Log out. Not shown when this build has no phone-app link.
+    if (!PhoneAppDialog::link().isEmpty()) {
+        auto *phoneBtn = new QPushButton(tr("TalQ for your phone…"));
+        phoneBtn->setProperty("variant", "ghost");
+        phoneBtn->setCursor(Qt::PointingHandCursor);
+        phoneBtn->setToolTip(tr("Install TalQ on your Android phone by scanning a code"));
+        connect(phoneBtn, &QPushButton::clicked, this, [this]() {
+            // Parented to Settings, which runs modal: a dialog parented to the main
+            // window would open behind it, blocked.
+            PhoneAppDialog dlg(this);
+            dlg.exec();
+        });
+        bottomRow->addSpacing(PainterTheme::spacingNormal);
+        bottomRow->addWidget(phoneBtn);
+    }
     bottomRow->addStretch();
 
     auto *logoutBtn = new QPushButton(tr("Log out"));

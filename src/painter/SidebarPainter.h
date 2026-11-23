@@ -95,7 +95,13 @@ public:
     // because the drop highlight is an index into the folder list.
     bool isDragInProgress() const { return m_dragInProgress; }
 
-    QImage cachedAvatar(const QString &key) const { return m_avatarCache.value(key); }
+    // The picture this list holds for a conversation, looked up by its OWN key
+    // (avatarCacheKey), and when it was fetched (0 = never, or marked stale by
+    // invalidateAvatars). For the chat header's hand-over on opening a chat:
+    // the caller used to spell the key by hand, differently ("room/" against
+    // "room:"), so the lookup never matched. Null image = nothing held.
+    struct HeldAvatar { QImage image; qint64 fetchedMs = 0; };
+    HeldAvatar cachedAvatarFor(const QString &userId, const QString &token, int convType) const;
     // Mark every cached row avatar stale so the next paint re-fetches it (the
     // current image stays visible until the new one loads). Called on window
     // focus so a changed group/user avatar shows up without a restart.
@@ -178,6 +184,16 @@ public:
     // is filtered out, or the list is not grouped by folders.
     void revealToken(const QString &token);
 
+    // Read-only test seam (sidebar-folders-test): the rows as last built, top to
+    // bottom, headers included (a conversation row's layoutIndex is its MODEL
+    // row), and the roll-up a folder header paints for `section` (a folder index,
+    // or talq::kFolderOther). The counts exist nowhere else but in pixels.
+    const std::vector<talq::SidebarRow> &visibleRows() const { return m_rows; }
+    talq::FolderRollup folderRollup(int section) const
+    {
+        return section == talq::kFolderOther ? m_otherRollup : m_folderRollups.value(section);
+    }
+
 signals:
     void selectedIndexChanged();
 
@@ -254,6 +270,8 @@ private:
     void paintRowSqueezed(QPainter *p, const ConversationLayout &cl, int visibleIdx);
     void paintSectionHeader(QPainter *p, const talq::SidebarRow &row);   // TAG header
     void paintFolderHeader(QPainter *p, const talq::SidebarRow &row, int visibleIdx);
+    // The eyebrow label font shared by the tag and the folder header.
+    QFont headerLabelFont() const;
     // Builds m_rows from m_layouts: flat when grouping is off (identical to
     // 0.64 behaviour), grouped into tag sections when tag grouping is on, or
     // into folder sections (buildFolderRows) when folder grouping is on.
@@ -373,14 +391,15 @@ private:
     Qt::MouseButton m_pressButton = Qt::NoButton;
     QString m_pressToken;               // token of the conversation row pressed (left button only)
     // The next release belongs to a drag that just ended, or to the second click
-    // of a double-click on a folder header: it must not open a chat or toggle.
+    // of a double-click on a section header: it must not open a chat or toggle.
     bool m_swallowRelease = false;
-    // The last release landed on a FOLDER header. The second click of a
-    // double-click is decided by this, not by hit-testing where it landed: the
-    // first click may have closed a folder near the bottom of a scrolled list,
-    // clampScroll() then slides a different row under the still pointer, and a
-    // hit-test would send the second click to a chat (or another folder).
-    bool m_lastReleaseWasFolderHeader = false;
+    // The last release landed on a section header (a folder OR a tag header).
+    // The second click of a double-click is decided by this, not by
+    // hit-testing where it landed: the first click may have closed a section
+    // near the bottom of a scrolled list, clampScroll() then slides a different
+    // row under the still pointer, and a hit-test would send the second click
+    // to a chat (or another header).
+    bool m_lastReleaseWasHeader = false;
     // QDrag::exec() is running (started from this widget). Hover is meaningless
     // for the whole drag, and a model refresh in the middle must not paint one.
     bool m_dragInProgress = false;

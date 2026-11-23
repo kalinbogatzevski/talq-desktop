@@ -18,11 +18,45 @@
 // replacing it with nothing (a timeout is a normal outcome now, and an offline blip
 // must not blank every avatar).
 //
-// Pure decisions, no Qt beyond integers; the painters own the HTTP.
+// Pure decisions, no Qt beyond integers and strings; the painters own the HTTP.
 
+#include "core/ConversationKind.h"
+
+#include <QString>
 #include <QtGlobal>
 
 namespace talq::avatarfetch {
+
+// WHICH picture a conversation shows, so also what its cache entry must be named by.
+// A one-to-one chat with a known peer shows that PERSON's picture
+// (/index.php/avatar/<user id>); every other conversation shows the ROOM's
+// (/room/<token>/avatar): groups, but also a one-to-one with no peer id, a former
+// one-to-one, the changelog and note-to-self. The sidebar and the chat header both
+// download by this rule; a cache key that names anything else (the chat header named a
+// room by its NAME) lets two conversations share one picture.
+inline bool isPersonPicture(int conversationType, const QString &userId)
+{
+    return conversationType == 1 && !userId.isEmpty();
+}
+
+// The chat header's cache key for a conversation. The header caches PRE-MASKED pixels,
+// so the shape comes first ("sq:" a rounded square, "c:" a circle, by
+// talq::isGroupConversation), then what was downloaded: "u:<user id>" for a person's
+// picture, "r:<token>" for a room's. Two group chats with the same name therefore get
+// two entries. Empty when there is nothing to download (a room whose token is not known):
+// no request is made and nothing is stored.
+inline QString headerCacheKey(int conversationType, const QString &userId, const QString &token)
+{
+    const bool person = isPersonPicture(conversationType, userId);
+    const QString &id = person ? userId : token;
+    if (id.isEmpty())
+        return QString();
+    QString key = talq::isGroupConversation(conversationType) ? QStringLiteral("sq:")
+                                                              : QStringLiteral("c:");
+    key += person ? QStringLiteral("u:") : QStringLiteral("r:");
+    key += id;
+    return key;
+}
 
 // A cached picture is asked for again once it is this old (a changed picture then
 // shows up without a restart); a window activation also marks every one stale.

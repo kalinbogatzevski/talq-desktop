@@ -12,10 +12,22 @@
 #include "models/Message.h"
 #include "core/ApiClient.h"
 #include "core/MessagePoller.h"
+#include "core/ScheduleFailurePolicy.h"
+#include "core/UpdateInstallGatePolicy.h"
 
 class MessageCache;
 class ConversationListModel;
 struct ChunkUploadState;   // chunked large-file upload state (defined in the .cpp)
+
+// What a file's share message carries besides the file (the share's talkMetaData), fixed when Send
+// was pressed and carried with the upload: the user may be in another room or topic by the time the
+// bytes are on the server. One struct, so the two ids cannot be swapped at a call site.
+struct FileShareMeta {
+    QString caption;      // capability media-caption; only the batch's first file carries it
+    int threadId = 0;     // the topic open when Send was pressed (0 = none)
+    int replyToId = 0;    // the message the share replies to (0 = none)
+    bool silent = false;  // no chat notifications, not even for mentions (media-caption)
+};
 
 /**
  * QAbstractListModel for chat messages in a conversation.
@@ -93,7 +105,8 @@ public:
     // Empty = no auto-prepend.
     void setAutoMentionBot(const QString &mentionSlug);
     QString autoMentionBot() const { return m_autoMentionBot; }
-    // What sendMessage() will really POST for `text` (bot @-mention in front where it applies).
+    // What sendMessage() and scheduleMessage() will really POST for `text` (bot @-mention in front
+    // where it applies). Not applied to a file's caption or to an edit.
     QString outgoingText(const QString &text, int replyToId) const;
 
     int threadId() const { return m_threadId; }
@@ -103,7 +116,9 @@ public:
     void setHideThreadMessages(bool hide);
 
     int unreadBoundary() const { return m_unreadBoundary; }
-    void setConversationListModel(ConversationListModel *c) { m_conversations = c; }
+    // Also listens to the list's refreshes: a refresh can be the first news of a
+    // reaction that a one-to-one room counts as unread (see markHiddenRowsRead).
+    void setConversationListModel(ConversationListModel *c);
 
     Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0, bool silent = false);
     // Schedule a message for future delivery via POST /chat/{token}/schedule.
@@ -137,10 +152,10 @@ public:
     // loggedInChanged handler in MainWindow) -- it must not be re-sent as, or
     // shown to, the next account that signs in on this machine.
     void clearOutbox();
-    // True while any unsent message is still being retried (a given-up one is not
-    // counted: it waits for the user and must not hold up an update forever). The
-    // auto-update install gate reads this: restarting would throw them away.
-    bool hasPendingSends() const;
+    // Every message in the outbox, given-up ones included, for the automatic-update gate
+    // (UpdateInstallGatePolicy.h outboxHoldsInstall): a restart throws each of them away. Never
+    // the text. roomListed is left true: this model does not know the conversation list.
+    QVector<talq::OutboxMessage> outboxForInstallGate() const;
     // False while the message's last attempt is still in flight (its answer is on
     // its way, Retry has nothing to do yet) or when it is no longer tracked.
     bool canRetry(int tempId) const;
@@ -186,14 +201,19 @@ public:
     // finished first). The room and the topic are taken NOW, when the user pressed Send, so a long
     // batch lands where it was sent even if they move on meanwhile. Names that clash within the
     // batch are made distinct (MultiFileLogic.h) -- the same name would overwrite the earlier file.
+    // `silent` and `replyToId` go on EVERY file of the batch, as the web client does: one silent
+    // file among notifying ones is not a silent send, and each file is its own message.
     Q_INVOKABLE void sendFilesWithCaption(const QStringList &filePaths, const QString &caption,
-                                          bool firstDeleteWhenShared = false);
+                                          bool firstDeleteWhenShared = false,
+                                          bool silent = false, int replyToId = 0);
     // Where the upload in flight stands within its batch (1-based; both 0 when nothing is queued).
     int uploadBatchIndex() const { return m_uploadBatchIndex; }
     int uploadBatchTotal() const { return m_uploadBatchTotal; }
     // Something is uploading OR waiting to. For the automatic-update gate: between two files of a
     // batch the progress is back at -1 for an instant, which must not read as "idle".
     bool hasQueuedUploads() const { return m_fileQueueRunning || !m_fileQueue.isEmpty(); }
+    // Files waiting behind the one in flight (for the update gate's log line).
+    int queuedUploadCount() const { return int(m_fileQueue.size()); }
     // Drop the files still waiting (the session ended); the one in flight finishes. A temp file
     // TalQ made for a dropped entry is removed.
     void clearFileQueue();
@@ -204,8 +224,10 @@ public:
     Q_INVOKABLE void downloadFile(int fileId, const QString &fileName,
                                   bool openWhenDone = true);
     // Upload and share a recording as a VOICE MESSAGE rather than a plain
-    // audio attachment. See shareUploadedFile for what the flag buys.
-    Q_INVOKABLE void sendVoiceMessage(const QString &filePath);
+    // audio attachment. See shareUploadedFile for what the flag buys. `token` and
+    // `threadId` are where the recording was STARTED (VoiceRoomPolicy.h), never
+    // read from what is open now.
+    Q_INVOKABLE void sendVoiceMessage(const QString &filePath, const QString &token, int threadId);
     // Write the ORIGINAL bytes of an attachment to a caller-chosen path. The
     // image viewer's "Save as..." used to re-encode its on-screen QImage --
     // which is a server-side preview render capped to the screen, so a 4000px
@@ -247,6 +269,13 @@ public:
     // carries a rich object that is not prose. This is what anything needing
     // the source text must use -- forwarding, and editing.
     Q_INVOKABLE QString rawBodyFor(int messageId) const;
+    // The body to send to tick or untick task box `box` (the renderer's
+    // number, TaskListLogic.h) of `selfUserId`'s own markdown comment, mentions
+    // as @"<mention-id>", or empty when that cannot be done exactly: not
+    // theirs, not markdown, a rich object, no server copy, a mention that
+    // cannot be restored, or the box is not where the click saw it.
+    QString taskToggledBodyFor(int messageId, int box, bool wasChecked,
+                               const QString &selfUserId) const;
     Q_INVOKABLE QString forwardBodyFor(int messageId) const;
     // The user's server-side attachment folder (config.attachments.folder).
     // Empty restores the historic "Talk".
@@ -259,6 +288,9 @@ signals:
     void conversationTokenChanged();
     void messageSent();
     void errorOccurred(const QString &error);
+    // An editMessage() call has ended, either way (after the row was updated on
+    // success). Emitted on every path, a room switched meanwhile included.
+    void editFinished(int messageId, bool ok);
     void newMessagesAtEnd();
     void connectedChanged();
     void threadIdChanged();
@@ -273,6 +305,12 @@ signals:
     // fileDownloaded so the "Saved to Downloads" toast never fires for a file
     // the user explicitly placed somewhere else.
     void fileSavedAs(const QString &savePath);
+    // A saveFileAs() fetch for `destPath` ended WITHOUT the file: not found on the server, the
+    // destination could not be opened, the transfer failed or was empty, or Windows blocked or
+    // removed it. Sent once per such fetch, BEFORE the errorOccurred box (a modal one), so a
+    // caller waiting for fileSavedAs on that path can stop waiting. Not sent for a Downloads
+    // fetch (no destination), nor for a transfer that never ends (it has no timeout).
+    void fileSaveFailed(const QString &destPath);
     void unreadBoundaryChanged();
     // Emitted after POST /chat/{token}/schedule succeeds — UI uses this to
     // confirm the schedule (toast / banner) without polling the queue.
@@ -286,7 +324,10 @@ signals:
     // send time had already passed. The composer cleared its box the moment it asked, so `text`
     // is the only copy and the owner must put it back -- in the room it was written for (`token`),
     // not whichever room is open by now. `reason` is user-facing and already translated.
-    void scheduleFailed(const QString &token, const QString &text, const QString &reason);
+    // `replyToId` is the message it replied to (0 for none) and `why` the refusal, so the owner can
+    // arm the reply again with the text (talq::rearmReplyAfterRefusal).
+    void scheduleFailed(const QString &token, const QString &text, const QString &reason,
+                        int replyToId, talq::ScheduleRefusal why);
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
@@ -325,25 +366,38 @@ private slots:
 
 private:
     void startPoller();
+    // markAsRead() with `onlyHiddenRows`: the marker may then only cross rows the
+    // view does not show, never a visible message still unread on the server
+    // (core/ChatSyncLogic.h hiddenRowsReadAllowed), so a "Mark as unread" stands.
+    void markAsReadImpl(bool onlyHiddenRows);
+    // For the triggers that bring nothing new to the screen: a poll batch of only
+    // reactions/edits/system rows, and a refresh of the room list. Either can be
+    // the moment a one-to-one room's reaction (counted as unread by the server)
+    // becomes readable past.
+    void markHiddenRowsRead() { markAsReadImpl(true); }
     void trimOldMessages();
     void refreshLatest();
     // Download helpers. resolveDavPathById recovers a live DAV path for a
     // fileId when the message's cached `path` is missing or degraded;
-    // fetchDavFile streams the bytes to disk; uniqueDownloadPath picks the
-    // destination without ever overwriting.
+    // fetchDavFile streams the bytes to disk (to Downloads, never over an
+    // existing file, when no destination is given: LocalFileName.h) and gives
+    // the file its Mark-of-the-Web before announcing or opening it
+    // (DownloadMark.h). Every received file TalQ writes to disk comes here.
     void resolveDavPathById(int fileId, std::function<void(const QString &)> done);
     void fetchDavFile(const QString &davPath, int fileId, const QString &fileName,
                       bool openWhenDone, const QString &destPath = QString());
     // Shared entry: resolve a path for `fileId` and hand it to fetchDavFile.
     void startFileFetch(int fileId, const QString &fileName, bool openWhenDone,
                         const QString &destPath);
+    // fileSaveFailed(destPath) when the fetch had an explicit destination; nothing for Downloads.
+    // Every branch that ends a fetch without fileSavedAs calls it, before any errorOccurred.
+    void reportSaveFailed(const QString &destPath);
     // The DAV path for `fileId`: the loaded message's own, else recovered over
     // DAV SEARCH. `done` gets an empty string when neither finds it. The one
     // lookup behind both startFileFetch and fetchFileBytes.
     void withDavPath(int fileId, std::function<void(const QString &)> done);
-    static QString uniqueDownloadPath(const QString &fileName);
     // The words for a refused /schedule (ScheduleFailurePolicy.h picks the reason).
-    static QString scheduleRefusalText(int status, const QString &error);
+    static QString scheduleRefusalText(talq::ScheduleRefusal why, int status);
     // File-upload helpers (used by sendFileWithCaption). shareUploadedFile posts
     // the Talk share once the bytes are on the server (shared by the single-PUT
     // and chunked paths); uploadFileChunked streams a large file via Nextcloud
@@ -351,9 +405,9 @@ private:
     // One file waiting to be uploaded, with everything that must not be read at upload time (the
     // user may have left the room or the topic by then).
     struct FileSend {
-        QString path, caption, name, token;   // name = the upload name; empty = derive from the path
+        QString path, name, token;            // name = the upload name; empty = derive from the path
         bool owned = false;                   // a temp file TalQ made: removed after its share
-        int threadId = 0;                     // the topic open when Send was pressed (0 = none)
+        FileShareMeta share;                  // caption, topic, reply, silent
         int batchIndex = 1, batchTotal = 1;
     };
     QVector<FileSend> m_fileQueue;
@@ -389,10 +443,10 @@ private:
     // if any, is deliberately left on disk for the startup sweep.
     void forgetPendingUpload(const QString &fileName);
     void shareUploadedFile(const QString &fileName, const QString &token,
-                           const QString &caption, int threadId, quint64 gen);
+                           const FileShareMeta &share, quint64 gen);
     void uploadFileChunked(const QString &readPath, const QString &fileName,
-                           const QString &token, const QString &caption,
-                           const QString &tempCopy, int threadId, quint64 gen);
+                           const QString &token, const FileShareMeta &share,
+                           const QString &tempCopy, quint64 gen);
     // Uploads the next chunk (or MOVE-assembles + shares when done). Re-invoked
     // from each chunk's finished() callback — no self-referential std::function,
     // so the state is released cleanly when the last reply completes.

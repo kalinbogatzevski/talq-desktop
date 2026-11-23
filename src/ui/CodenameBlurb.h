@@ -89,6 +89,13 @@ inline QString codenameBlurb(const QString &verName)
             "after Pentecost. A name over a release that shows what is behind a "
             "link before you click it, and that gives the incoming sound more room "
             "to ride out a bad stretch of the connection.").arg(verName);
+    if (verName == QStringLiteral("Andreevden"))
+        return QObject::tr("Codename \"%1\" — Андреевден, St Andrew's Day, 30 "
+            "November. Bulgarian folk tradition also calls it Mechkinden, Bear Day: "
+            "in the best-known tale the saint harnessed a bear to his plough after "
+            "it ate his ox. From this day on, the day is said to grow by one millet "
+            "grain a day. A name over a release that grows TalQ by many small "
+            "grains, and puts it on your phone.").arg(verName);
     if (verName == QStringLiteral("Arhangelovden"))
         return QObject::tr("Codename \"%1\" — Архангелов ден, 8 November: the "
             "Church's feast of the Archangel Michael and the other heavenly powers, "

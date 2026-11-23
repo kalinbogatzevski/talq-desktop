@@ -17,7 +17,10 @@
 #include "ImageViewerDialog.h"
 #include "core/AudioPlayer.h"
 #include "core/ImageCopyLogic.h"
+#include "core/LocalFileName.h"
 #include "core/MarkdownHtml.h"
+#include "core/ScheduleFailurePolicy.h"
+#include "core/TalkRefusalPolicy.h"
 #include "core/UpdateInstallGatePolicy.h"
 #include "core/VoiceRecorder.h"
 #include <QDir>
@@ -60,10 +63,12 @@
 #include "ui/StatusPopover.h"
 #include "ui/AppStyle.h"
 #include "ui/SearchFieldClear.h"
+#include "ui/WindowOnScreen.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "core/MediaDeviceManager.h"
 #include "core/UpdateChecker.h"
+#include "core/UpdateLog.h"
 #include <gst/gst.h>
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
@@ -269,11 +274,12 @@ void MainWindow::beginEditingMessage(int messageId, const QString &fallbackPlain
         source = fallbackPlain;
     }
 
-    m_editingMessageId = messageId;
     // Mentions arrive as @"id" -- exactly what the composer's own autocomplete
     // inserts (ComposerWidget.cpp:1180), so an edited mention round-trips
-    // through the server unchanged.
-    m_composer->showEditingBar(source);
+    // through the server unchanged. The composer refuses (and says why) while a
+    // file is staged; the edit is armed only when it took it.
+    if (m_composer->showEditingBar(source))
+        m_editingMessageId = messageId;
 }
 
 MainWindow::~MainWindow()
@@ -1035,6 +1041,9 @@ void MainWindow::buildChatPage()
     // Home button and clickable-logo → return to welcome screen
     connect(m_homeBtn, &QPushButton::clicked, m_sidebar, &SidebarPainter::homeRequested);
     connect(m_sidebar, &SidebarPainter::homeRequested, this, [this]() {
+        // Home hides the composer, so a recording left running here kept the microphone open with
+        // no control. Going Home leaves the room: the recording ends and goes where it started.
+        endVoiceRecording(talq::voice::Place{});
         m_sidebar->setSelectedIndex(-1);
         if (m_chatPainter->selectionMode())
             m_chatPainter->exitSelectionMode();
@@ -1631,10 +1640,13 @@ void MainWindow::buildChatPage()
             if (token != m_activeConvToken) return;   // the user moved on
             if (!ok) {
                 qWarning() << "keep classified room refused:" << token << code;
-                m_roomNoticeLabel->setText(
-                    tr("Could not keep this conversation (%1). Open the conversation "
-                       "info to try again, or ask a moderator.")
-                        .arg(code.isEmpty() ? tr("the server refused") : code));
+                // The code is a machine word: it went into this line raw until 2026-11. The
+                // route's only coded refusal is "object-type" (nothing queued to keep); its 403
+                // (not a moderator) carries no code.
+                m_roomNoticeLabel->setText(code == QLatin1String("object-type")
+                    ? tr("This conversation is not queued for deletion, so there is nothing to keep.")
+                    : tr("Could not keep this conversation. Open the conversation "
+                         "info to try again, or ask a moderator."));
                 return;
             }
             m_roomNoticeBar->hide();
@@ -1666,17 +1678,45 @@ void MainWindow::buildChatPage()
     });
     connect(m_recorder, &VoiceRecorder::failed, this, [this](const QString &reason) {
         m_composer->setRecordingState(false);
+        // A failure found by a STOP (nothing recorded, a muted mic) can come from inside a room
+        // switch or Home, which end a recording: a modal box there runs a nested event loop in
+        // which a sidebar refresh can re-enter the switch. Say it from the event loop instead.
+        if (m_voiceStopping) {
+            QTimer::singleShot(0, this, [this, reason]() {
+                QMessageBox::warning(this, tr("Recording failed"), reason);
+            });
+            return;
+        }
         QMessageBox::warning(this, tr("Recording failed"), reason);
     });
     connect(m_recorder, &VoiceRecorder::finished, this,
             [this](const QString &path, qint64 durationMs) {
-        // Under a second is a mis-click, not a message. Sending it would drop
-        // a 0-second bubble into someone's chat that they cannot help but tap.
-        if (durationMs < 1000) {
+        // A recording goes where it was STARTED, never to whatever is open when it ends
+        // (VoiceRoomPolicy.h). stop() is called only from endVoiceRecording, which says what
+        // will be on screen once it is done; the fallback is only for safety.
+        const talq::voice::Place openNow = m_voiceStopping
+            ? m_voiceOpenAtStop
+            : talq::voice::Place{m_activeConvToken, m_messages ? m_messages->threadId() : 0};
+        const talq::voice::Route route = talq::voice::routeFinished(
+            durationMs, m_voiceStart, openNow,
+            talq::voice::startRoomPresent(listedConversationTokens(), m_voiceStart.token));
+        switch (route) {
+        case talq::voice::Route::Drop:
+        case talq::voice::Route::DiscardAndSay:
             QFile::remove(path);
-            return;
+            break;
+        case talq::voice::Route::Send:
+        case talq::voice::Route::SendAndSay:
+            m_messages->sendVoiceMessage(path, m_voiceStart.token, m_voiceStart.threadId);
+            break;
         }
-        m_messages->sendVoiceMessage(path);
+        qInfo() << "Voice message:" << durationMs / 1000 << "s recording,"
+                << (route == talq::voice::Route::Drop            ? "under a second, dropped"
+                    : route == talq::voice::Route::DiscardAndSay ? "start room gone, discarded"
+                    : route == talq::voice::Route::SendAndSay    ? "sent to its start room (not the one on screen)"
+                                                                 : "sent")
+                << "-- room" << m_voiceStart.token << "topic" << m_voiceStart.threadId;
+        sayVoiceRoute(route);
     });
     // Keep the recorder on whatever microphone the user has chosen, and follow
     // them if they change it in Settings mid-session. Read at record time as
@@ -1689,12 +1729,21 @@ void MainWindow::buildChatPage()
 
     connect(m_composer, &ComposerWidget::voiceRecordToggled, this, [this]() {
         if (m_recorder->isRecording()) {
-            m_recorder->stop();
+            // The user's own Stop: what is on screen stays on screen.
+            endVoiceRecording(talq::voice::Place{m_activeConvToken,
+                                                 m_messages ? m_messages->threadId() : 0});
             return;
         }
         m_recorder->setInputDevice(m_deviceManager->selectedInputDeviceId());
         if (!m_messages || m_messages->conversationToken().isEmpty())
             return;
+        // The recording belongs HERE: this room and the topic the composer posts to now. Leaving the
+        // room ends it and sends it here; the names are kept for the toast that says so, because a
+        // room that is gone by then is no longer in the list.
+        m_voiceStart = talq::voice::Place{m_messages->conversationToken(), m_messages->threadId()};
+        m_voiceRoomName = m_conversations ? m_conversations->displayNameForToken(m_voiceStart.token)
+                                          : QString();
+        m_voiceTopicTitle = m_voiceStart.threadId > 0 ? m_activeThreadTitle : QString();
         // Named for Talk's own convention, so other clients label it the way
         // their users expect; the timestamp keeps two recordings apart.
         const QString path = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
@@ -1729,18 +1778,40 @@ void MainWindow::buildChatPage()
         m_replyToText.clear();
         m_composer->hideReplyBar();
     });
-    connect(m_composer, &ComposerWidget::scheduleRequested, this,
-            [this](const QString &text, qint64 sendAt, bool silent) {
-        // scheduleMessage already wires m_threadId on the body itself,
-        // so the same rule applies: replyTo only on explicit replies.
-        m_messages->scheduleMessage(text, sendAt, m_replyToId, silent);
+    // Staged files, the same way: the reply goes with them (every file of a batch, as the web
+    // client does), and the reply bar comes down. Until now the composer sent files itself, so a
+    // file sent as a reply lost the reply and left the bar armed for the next message.
+    connect(m_composer, &ComposerWidget::sendFilesRequested, this,
+            [this](const QStringList &files, const QString &caption, bool firstOwned, bool silent) {
+        m_messages->sendFilesWithCaption(files, caption, firstOwned, silent, m_replyToId);
         m_replyToId = 0;
         m_replyToAuthor.clear();
         m_replyToText.clear();
         m_composer->hideReplyBar();
     });
+    connect(m_composer, &ComposerWidget::scheduleRequested, this,
+            [this](const QString &text, qint64 sendAt, bool silent) {
+        // scheduleMessage already wires m_threadId on the body itself,
+        // so the same rule applies: replyTo only on explicit replies.
+        //
+        // The reply is taken off the composer BEFORE the request, for the reason the composer
+        // empties its box before it emits: scheduleMessage can refuse at once (a send time that has
+        // already passed) and hand the message back through scheduleFailed, whose handler arms
+        // the reply again. Clearing after the call undid that. Copied first: hideReplyBar() emits
+        // replyBarCancelled, which clears the members too. Nothing about the reply may follow the
+        // scheduleMessage call.
+        const int replyToId = m_replyToId;
+        if (replyToId > 0)
+            m_scheduledReplyQuotes.insert(replyToId, ReplyQuote{m_replyToAuthor, m_replyToText});
+        m_replyToId = 0;
+        m_replyToAuthor.clear();
+        m_replyToText.clear();
+        m_composer->hideReplyBar();
+        m_messages->scheduleMessage(text, sendAt, replyToId, silent);
+    });
     connect(m_composer, &ComposerWidget::manageScheduledRequested, this, [this]() {
         if (!m_messages || m_messages->conversationToken().isEmpty()) return;
+        if (!m_auth || !m_auth->capabilities().supportsScheduledMessages()) return;
         auto *dlg = new ScheduledMessagesDialog(m_api, m_messages->conversationToken(), this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->open();  // non-modal; user can keep typing while reviewing the queue
@@ -1758,26 +1829,59 @@ void MainWindow::buildChatPage()
                            m_composer, QRect(), 3000);
     });
     connect(m_messages, &MessageListModel::scheduleFailed, this,
-            [this](const QString &token, const QString &text, const QString &reason) {
+            [this](const QString &token, const QString &text, const QString &reason,
+                   int replyToId, talq::ScheduleRefusal why) {
         // The composer emptied its box when it asked to schedule, so this is the only copy of the
         // text. It goes back to the room it was written for, and never over what is typed now.
         // Restored BEFORE the modal box below opens, so it is already there behind it.
+        //
+        // A refusal that comes back from the server can come long after the request, and the box
+        // may by then hold a file's caption, a reply to another message, or an edit: typed back in,
+        // the text would be sent as part of that. Such a box is "taken" (talq::restoreBoxIsTaken)
+        // and the text goes to the clipboard, which never touches the box. A refusal made at once
+        // (a time already passed) always finds the box free: it is empty, nothing is staged or
+        // edited (scheduleAt refuses those) and the reply was taken off before the request went
+        // out (the scheduleRequested handler above).
+        //
+        // A reply goes back as a reply, the way the send outbox keeps one; without the bar, Enter
+        // posted it as a plain message (with the bot's @-mention in a bot chat). Never with a blank
+        // bar: no quote kept (a logout in between) means no reply.
+        const auto quote = m_scheduledReplyQuotes.constFind(replyToId);
+        const bool comesBackAsReply = quote != m_scheduledReplyQuotes.constEnd()
+            && talq::rearmReplyAfterRefusal(why, /*restoredToComposer*/ true, replyToId,
+                                            /*armedReplyToId*/ 0);
+        talq::RestoreBox box;
+        box.editing = !m_composer || m_composer->isEditing();
+        box.stagedFile = m_composer && m_composer->hasStagedAttachment();
+        box.hasText = m_composer && !m_composer->currentText().isEmpty();
+        box.armedReplyToId = m_replyToId;
         QString where;
         switch (talq::restoreTargetFor(token, m_activeConvToken,
-                                       /*composerIsEditing*/ !m_composer || m_composer->isEditing())) {
-        case talq::RestoreTarget::Composer:
+                                       talq::restoreBoxIsTaken(box, replyToId, comesBackAsReply))) {
+        case talq::RestoreTarget::Composer: {
             m_composer->setText(talq::mergeRestoredText(m_composer->currentText(), text));
             where = tr("Your message is back in the message box.");
+            if (quote != m_scheduledReplyQuotes.constEnd()
+                && talq::rearmReplyAfterRefusal(why, /*restoredToComposer*/ true,
+                                                replyToId, m_replyToId)) {
+                m_replyToId = replyToId;
+                m_replyToAuthor = quote->author;
+                m_replyToText = quote->bodyHtml;
+                m_composer->showReplyBar(quote->author, replyPreviewFromBodyHtml(quote->bodyHtml));
+                where = tr("Your message is back in the message box, still as a reply.");
+            }
             break;
+        }
         case talq::RestoreTarget::RoomDraft:
             m_composerDrafts[token] = talq::mergeRestoredText(m_composerDrafts.value(token), text);
             where = tr("Your message was kept as a draft in that conversation.");
             break;
         case talq::RestoreTarget::Clipboard:
-            // An edit buffer is an existing message: text added to it would be sent as an edit of
-            // someone's message. Not lost, and not mixed in.
+            // The box is taken (an edit, a file's caption, another reply, text a re-armed reply
+            // would capture): not lost, and not mixed in. It replaces what the clipboard held.
             QGuiApplication::clipboard()->setText(text);
-            where = tr("Your message was copied to the clipboard.");
+            where = tr("Your message was copied to the clipboard. What is in the message box was "
+                       "left as it is.");
             break;
         }
         QMessageBox::warning(this, tr("Message not scheduled"),
@@ -1934,6 +2038,41 @@ void MainWindow::buildChatPage()
     });
 
     m_imageClipboard = new ImageClipboard(m_api, m_messages, this);
+
+    // A task-list box in an own message was clicked: tick or untick it by
+    // editing the message, through the ordinary edit (TaskListLogic.h). The
+    // painter offers the click only where the server would take the edit; the
+    // text to send is worked out from the server's copy and refused unless it
+    // changes exactly that one box.
+    connect(m_chatPainter, &ChatPainter::taskBoxToggled, this,
+            [this](int msgId, int box, bool wasChecked) {
+        if (!m_messages || !m_auth || msgId <= 0) return;
+        if (m_editingMessageId == msgId) {
+            // The edit bar holds the text from before the tick, and saving it
+            // would put the box back.
+            showToast(tr("Finish editing this message first"));
+            return;
+        }
+        constexpr qint64 kTaskTickStaleMs = 30000;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const auto inFlight = m_taskTickInFlight.constFind(msgId);
+        if (inFlight != m_taskTickInFlight.constEnd() && now - inFlight.value() < kTaskTickStaleMs) {
+            showToast(tr("Still saving the last change to this list"));
+            return;
+        }
+        const QString body = m_messages->taskToggledBodyFor(msgId, box, wasChecked,
+                                                            m_auth->userId());
+        if (body.isEmpty()) {
+            qWarning() << "task box: no exact edit for message" << msgId << "box" << box;
+            showToast(tr("Couldn't change this box. Edit the message instead."));
+            return;
+        }
+        m_taskTickInFlight.insert(msgId, now);
+        m_messages->editMessage(msgId, body);
+    });
+    connect(m_messages, &MessageListModel::editFinished, this, [this](int msgId, bool) {
+        m_taskTickInFlight.remove(msgId);
+    });
 
     // The warning on an unsent message was clicked: Retry now / Discard. Retry
     // goes through the outbox's check-then-resend, so it cannot post a second
@@ -2499,11 +2638,20 @@ void MainWindow::buildChatPage()
     connect(m_auth, &AuthManager::loggedInChanged, this, [this]() {
         if (m_auth && !m_auth->isLoggedIn()) {
             m_composerDrafts.clear();
+            m_scheduledReplyQuotes.clear();   // another account's message text and author name
             if (m_composer) m_composer->clearText();
             // Sent-but-unconfirmed messages are the same kind of thing: still the
             // session's. Left alone they would be probed and re-POSTed with the NEXT
             // account's credentials, or redrawn in its window as its own message.
             if (m_messages) m_messages->clearOutbox();
+            // A voice message still being recorded is the session's as well. Left running it kept
+            // the microphone open and the automatic install held, and stopping it later would
+            // send it into a room of whoever signs in next. Nothing of it is kept.
+            if (m_recorder && m_recorder->isRecording()) {
+                qInfo() << "Voice message: recording discarded at logout after"
+                        << m_recorder->elapsedMs() / 1000 << "s";
+                m_recorder->cancel();
+            }
         }
     });
 
@@ -2513,6 +2661,12 @@ void MainWindow::buildChatPage()
     // SUCCESSFUL list refresh and never on a failed one, so a network error
     // cannot empty the list and take real drafts with it.
     connect(m_conversations, &ConversationListModel::countChanged, this, [this]() {
+        // A recording whose room has left the list (deleted, left or removed on another device)
+        // has nowhere to go. An empty list proves nothing (startRoomPresent), so a glitch cannot
+        // throw a recording away.
+        if (m_recorder && m_recorder->isRecording()
+            && !talq::voice::startRoomPresent(listedConversationTokens(), m_voiceStart.token))
+            discardVoiceRecordingRoomGone();
         if (m_composerDrafts.isEmpty()) return;
         talq::dropDraftsForUnlistedRooms(m_composerDrafts, listedConversationTokens());
     });
@@ -2561,6 +2715,9 @@ void MainWindow::buildChatPage()
             m_callManager->setRecordingAvailable(m_auth->recordingAvailable());
         if (m_composer) {
             m_composer->setPollsAvailable(m_auth->capabilities().supportsPolls());
+            // "Send later" / "Manage scheduled…": Talk 23+ only.
+            m_composer->setSchedulingAvailable(
+                m_auth->capabilities().supportsScheduledMessages());
             // 0 (not advertised, or logged out) leaves the composer unrestricted.
             m_composer->setMaxMessageLength(m_auth->maxMessageLength());
         }
@@ -2844,6 +3001,14 @@ void MainWindow::buildChatPage()
     });
 
     m_updateChecker->start();
+    // A minute in, once the installer that relaunched this session has exited and let go of its
+    // file: remove the installers of this version and older that earlier updates left in the temp
+    // folder (InstallerSweep.h). The one an install is waiting on and the one being downloaded
+    // stay. Independent of the update settings: a manual update leaves its installer too.
+    QTimer::singleShot(60'000, this, [this]() {
+        if (m_updateChecker)
+            m_updateChecker->sweepSpentInstallers(m_pendingInstallerPath);
+    });
 
     m_stack->addWidget(m_chatPage);
 }
@@ -2921,11 +3086,29 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
             const bool draft = dlg->saveAsDraft();
             m_api->createPoll(token, dlg->question(), dlg->options(),
                               dlg->resultMode(), dlg->maxVotes(), threadId,
-                              [this, token, draft](bool ok, const QJsonObject &, int) {
+                              [this, token, draft](bool ok, const QJsonObject &data, int status) {
                 if (!ok) {
+                    // Talk's code is mapped, never shown (TalkRefusalPolicy.h).
+                    QString why;
+                    switch (talq::classifyTalkRefusal(talq::TalkRequest::CreatePoll, status,
+                                data.value(QStringLiteral("error")).toString().toStdString())) {
+                    case talq::TalkRefusal::NoConnection:
+                        why = tr("TalQ could not reach the server."); break;
+                    case talq::TalkRefusal::DraftNeedsModerator:
+                        why = tr("Only moderators can save a poll as a draft."); break;
+                    case talq::TalkRefusal::NotAGroup:
+                        why = tr("Polls can only be created in group conversations."); break;
+                    case talq::TalkRefusal::QuestionTooLong:
+                        why = tr("The question is too long."); break;
+                    case talq::TalkRefusal::AnswersTooLong:
+                        why = tr("The answers are too long."); break;
+                    default:
+                        break;
+                    }
+                    const QString what = draft ? tr("The draft could not be saved.")
+                                               : tr("The poll could not be created.");
                     QMessageBox::warning(this, tr("Poll"),
-                        draft ? tr("The draft could not be saved.")
-                              : tr("The poll could not be created."));
+                        why.isEmpty() ? what : what + QLatin1Char(' ') + why);
                     return;
                 }
                 // A draft posts nothing to the chat, so there is no new message
@@ -3123,6 +3306,7 @@ void MainWindow::applyRoomGuards()
                        && m_conversations->conversationForToken(m_activeConvToken, &c);
     if (!known) {
         m_composer->setPostBlockedReason(QString());
+        if (m_chatPainter) m_chatPainter->setTaskBoxRoom(true, false);
         if (m_roomNoticeBar) m_roomNoticeBar->hide();
         return;
     }
@@ -3132,7 +3316,15 @@ void MainWindow::applyRoomGuards()
     // sending a message means typing the message first. An absent field reads
     // as "allowed", so an older server is unchanged.
     QString reason;
-    switch (talq::postBlock(c.attributes, c.readOnly, c.hasPermissions, c.permissions)) {
+    const talq::PostBlock block = talq::postBlock(c.attributes, c.readOnly, c.hasPermissions,
+                                                  c.permissions);
+    // An edit needs the same right as a post (spreed: RequirePermission CHAT,
+    // RequireReadWriteConversation), so a task box can be ticked only where the
+    // user could post; Note to self has no edit age limit.
+    if (m_chatPainter)
+        m_chatPainter->setTaskBoxRoom(block == talq::PostBlock::None,
+                                      c.type == Conversation::NoteToSelf);
+    switch (block) {
     case talq::PostBlock::None:
         break;
     case talq::PostBlock::ReadOnly:
@@ -3186,6 +3378,13 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
 {
     if (m_chatPainter->selectionMode())
         m_chatPainter->exitSelectionMode();
+
+    // Opening another room (a topic in another room comes through here first) leaves the one a
+    // recording started in: it ends and goes there. Judged on the START room's token, because this
+    // handler re-fires on every sidebar refresh for the room already open.
+    if (m_recorder && talq::voice::navigationEndsRecording(m_recorder->isRecording(),
+                                                           m_voiceStart, token))
+        endVoiceRecording(talq::voice::Place{token, 0});
 
     // 0.65.3 — per-conversation composer drafts.
     //
@@ -3246,12 +3445,6 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
         m_shiftStatus->observe({userId});
     m_header->setConversationType(convType);
     m_header->setPeerStatus(userStatus, statusMessage, statusIcon);
-
-    // Pass sidebar's cached avatar to header (avoids duplicate HTTP fetch)
-    QString avatarKey = (convType == 1) ? userId : ("room/" + token);
-    QImage cached = m_sidebar->cachedAvatar(avatarKey);
-    if (!cached.isNull())
-        m_header->setAvatarImage(cached);
     m_header->setActiveThreadId(0);
     m_header->setActiveThreadTitle("");
     m_header->setIsInTopicMode(false);
@@ -3296,6 +3489,15 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_messages->setConversationToken(token);
 
     m_header->setConversationToken(token);
+    // Hand the sidebar's picture for this chat to the header, so it shows at once
+    // (and is not downloaded twice). HERE, after the header's type, user id AND
+    // token are set: the header files it under the key of what is open now, and a
+    // group's key is its token.
+    {
+        const SidebarPainter::HeldAvatar held = m_sidebar->cachedAvatarFor(userId, token, convType);
+        if (!held.image.isNull())
+            m_header->setAvatarImage(held.image, held.fetchedMs);
+    }
     m_header->setMessageCount(m_messages->rowCount());
     // Calls are offered only when the backend can carry one AND this user is
     // allowed to start one HERE. 0.65.3 gated the list action on canStartCall;
@@ -4281,6 +4483,9 @@ void MainWindow::showToastFor(const QString &text, int ms)
         m_toast = new QLabel(this);
         m_toast->setAttribute(Qt::WA_TransparentForMouseEvents);
         m_toast->setAlignment(Qt::AlignCenter);
+        // A toast can carry a server-supplied name (a voice message's room); a QLabel left on
+        // AutoText would parse one that looks like markup as HTML.
+        m_toast->setTextFormat(Qt::PlainText);
         m_toastHideTimer = new QTimer(this);
         m_toastHideTimer->setSingleShot(true);
         m_toastHideTimer->setInterval(1600);
@@ -4298,6 +4503,54 @@ void MainWindow::showToastFor(const QString &text, int ms)
     m_toast->raise();
     m_toast->show();
     m_toastHideTimer->start(ms);   // each toast sets its own time (showToast: 1600 ms)
+}
+
+void MainWindow::endVoiceRecording(const talq::voice::Place &openAfter)
+{
+    if (!m_recorder || !m_recorder->isRecording()) return;
+    m_voiceOpenAtStop = openAfter;
+    m_voiceStopping = true;
+    m_recorder->stop();      // emits finished or failed before it returns
+    m_voiceStopping = false;
+}
+
+void MainWindow::discardVoiceRecordingRoomGone()
+{
+    if (!m_recorder || !m_recorder->isRecording()) return;
+    const talq::voice::Route route = talq::voice::routeFinished(
+        m_recorder->elapsedMs(), m_voiceStart, m_voiceStart, /*startPresent*/ false);
+    qInfo() << "Voice message: start room" << m_voiceStart.token
+            << "is gone -- recording discarded after" << m_recorder->elapsedMs() / 1000 << "s";
+    m_recorder->cancel();    // deletes the file; emits no finished
+    sayVoiceRoute(route);    // a sub-second one is dropped without a word
+}
+
+void MainWindow::sayVoiceRoute(talq::voice::Route route)
+{
+    using talq::voice::Route;
+    if (route != Route::SendAndSay && route != Route::DiscardAndSay) return;
+    // The name the list has now (a rename since the start shows), else the one taken at the start:
+    // a room that is gone is no longer in the list.
+    QString room = m_conversations ? m_conversations->displayNameForToken(m_voiceStart.token)
+                                   : QString();
+    if (room.trimmed().isEmpty()) room = m_voiceRoomName;
+    room = talq::voice::toastName(room);
+    QString text;
+    if (route == Route::DiscardAndSay) {
+        text = room.isEmpty()
+            ? tr("Voice message discarded: you are no longer in that conversation")
+            : tr("Voice message discarded: you are no longer in %1").arg(room);
+    } else if (!room.isEmpty() && m_voiceStart.threadId > 0
+               && !m_voiceTopicTitle.trimmed().isEmpty()) {
+        text = tr("Voice message sent to %1, topic %2")
+                   .arg(room, talq::voice::toastName(m_voiceTopicTitle));
+    } else {
+        text = room.isEmpty() ? tr("Voice message sent")
+                              : tr("Voice message sent to %1").arg(room);
+    }
+    // From the event loop: the navigation that ended the recording shows and raises its own widgets
+    // after this (the update banner among them), which would cover a toast shown now.
+    QTimer::singleShot(0, this, [this, text]() { showToastFor(text, 4000); });
 }
 
 // Re-apply theme tokens to the QSS-styled sidebar chrome. These widgets are
@@ -4779,23 +5032,31 @@ void MainWindow::restoreChatGeometry()
     int vis = m_settings.value("savedVisibility", 2).toInt();
     m_settings.endGroup();
 
-    // Clamp to screen bounds
-    if (auto *screen = QApplication::primaryScreen()) {
-        QRect avail = screen->availableGeometry();
-        w = qMin(w, avail.width());
-        h = qMin(h, avail.height());
-    }
-
-    // Set windowed geometry first
-    resize(w, h);
-    if (sx != -1 || sy != -1) {
-        move(sx, sy);
-    } else {
+    // Set windowed geometry first, on a screen that is there NOW. The saved spot (the frame's
+    // corner) can be on a monitor that has gone or moved since: put back as it was, the window
+    // opens out of reach, and so does its normal size behind a maximized or minimized start.
+    // The screen is the one holding the saved rect's centre, else the primary; the size is
+    // bounded to THAT screen's work area and the corner kept inside it. The frame is not known
+    // before the first show, so the plain show() below looks again with the real one.
+    const bool savedSpot = (sx != -1 || sy != -1);
+    QScreen *screen = savedSpot ? QGuiApplication::screenAt(QRect(sx, sy, w, h).center())
+                                : nullptr;
+    if (!screen) screen = QApplication::primaryScreen();
+    if (screen && savedSpot) {
+        const QRect placed = talq::screenfit::placeSavedWindow(QPoint(sx, sy), QSize(w, h),
+                                                               screen->availableGeometry());
+        resize(placed.size());
+        move(placed.topLeft());
+    } else if (screen) {
         // First launch: center on screen
-        if (auto *screen = QApplication::primaryScreen()) {
-            QRect geo = screen->availableGeometry();
-            move(geo.center() - QPoint(w / 2, h / 2));
-        }
+        const QRect geo = screen->availableGeometry();
+        w = qMin(w, geo.width());
+        h = qMin(h, geo.height());
+        resize(w, h);
+        move(geo.center() - QPoint(w / 2, h / 2));
+    } else {
+        resize(w, h);
+        if (savedSpot) move(sx, sy);
     }
 
     if (m_startMinimizedPending) {
@@ -4815,6 +5076,11 @@ void MainWindow::restoreChatGeometry()
         showMaximized();
     } else {
         show();
+        // The frame is known now: the title bar and the edges inside the work area, and once
+        // more when the event loop is back (the frame can still settle around the first show).
+        // Not for the maximized or minimized starts: the placement above is all they get.
+        talq::screenfit::keepWindowOnScreen(this);
+        QTimer::singleShot(0, this, [this]() { talq::screenfit::keepWindowOnScreen(this); });
     }
 
     // Delay enabling geometry save to avoid saving during restore
@@ -5156,10 +5422,21 @@ void MainWindow::resizeEvent(QResizeEvent *e)
     relayoutWelcomeTiles();
 }
 
+// Every "Update:" line goes to talq_debug.log AND to talq_update.log, which is
+// never truncated at startup (UpdateLog.h): the debug log of the session that
+// performs an update is the one most at risk of being lost. `fileLine`, when
+// given, is what the update log gets instead: that file is kept for months, so
+// it is never given room tokens or file names.
+static void logUpdateLine(const QString &line, const QString &fileLine = QString())
+{
+    qInfo().noquote() << line;
+    talq::updatelog::note(fileLine.isEmpty() ? line : fileLine);
+}
+
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
 {
     m_pendingInstallerPath = installerPath;
-    qInfo().noquote() << "Update: installer downloaded:" << installerPath;
+    logUpdateLine(QStringLiteral("Update: installer downloaded: ") + installerPath);
     // What kind of install this is, decided once, here. Nothing later re-reads
     // updates/autoInstall to reclassify it (UpdateInstallGatePolicy.h). A
     // download that replaced a waiting install -- the re-download after a
@@ -5253,22 +5530,41 @@ void MainWindow::noteInstallGateChange(const talq::InstallGateInputs &gates)
         && !(note.size() && now - m_lastInstallGateLogMs >= kHeartbeatMs))
         return;
     if (note.isEmpty()) {
-        qInfo().noquote() << "Update: auto-install no longer held (was held by" << m_lastInstallGateNote
-                          << "for" << (now - m_installHeldSinceMs) / 1000 << "s in all)";
+        logUpdateLine(QStringLiteral("Update: auto-install no longer held (was held by %1 for %2 s in all)")
+                          .arg(m_lastInstallGateNote,
+                               QString::number((now - m_installHeldSinceMs) / 1000)));
     } else {
-        // Say WHAT inside the coarse gates: which kind of unsent work, and for the mouse gate
-        // both views of the buttons. The gate holds only while Qt AND Windows say one is down
-        // (Qt alone sticks when the release lands outside TalQ's windows).
+        // Say WHAT inside the coarse gates -- which room, which file, how long; never a message's
+        // text -- and for the mouse gate both views of the buttons. The gate holds only while Qt
+        // AND Windows say one is down (Qt alone sticks when the release lands outside TalQ's
+        // windows).
         QStringList detail;
         if (gates.unsentText) {
-            if (m_composer && !m_composer->currentText().trimmed().isEmpty())
-                detail << QStringLiteral("open composer has text");
-            int otherDrafts = 0;
-            for (auto it = m_composerDrafts.constBegin(); it != m_composerDrafts.constEnd(); ++it)
-                if (it.key() != m_activeConvToken && !it.value().trimmed().isEmpty()) ++otherDrafts;
-            if (otherDrafts) detail << QStringLiteral("draft in %1 other conversation(s)").arg(otherDrafts);
-            if (m_messages && m_messages->hasPendingSends())
-                detail << QStringLiteral("message in the send outbox");
+            if (m_composer && talq::isUnsentText(m_composer->currentText()))
+                detail << QStringLiteral("open composer has text (room %1)").arg(m_activeConvToken);
+            const QStringList draftRooms =
+                talq::roomsWithUnsentDrafts(m_composerDrafts, m_activeConvToken);
+            if (!draftRooms.isEmpty())
+                detail << QStringLiteral("draft in %1 other conversation(s): %2")
+                              .arg(QString::number(draftRooms.size()),
+                                   talq::namedList(draftRooms, QStringLiteral(", ")));
+            const QString outbox = talq::describeOutboxHold(outboxForInstallGate(), now);
+            if (!outbox.isEmpty())
+                detail << outbox;
+        }
+        if (gates.attachmentStaged && m_composer)
+            detail << QStringLiteral("staged in the composer: %1")
+                          .arg(m_composer->stagedAttachmentForLog());
+        if (gates.voiceRecording && m_recorder)
+            detail << QStringLiteral("voice message recording for %1")
+                          .arg(talq::holdAgeText(m_recorder->elapsedMs()));
+        if (gates.uploadInProgress && m_messages) {
+            const QString upload = talq::describeUploadHold(
+                m_messages->uploadFileName(), m_messages->uploadProgress(),
+                m_messages->uploadBatchIndex(), m_messages->uploadBatchTotal(),
+                m_messages->queuedUploadCount());
+            if (!upload.isEmpty())
+                detail << upload;
         }
         if (gates.mouseButtonHeld) {
             const int osButtons = osMouseButtonsDown();
@@ -5279,11 +5575,16 @@ void MainWindow::noteInstallGateChange(const talq::InstallGateInputs &gates)
         if (!gates.callActive && talq::withinPostCallGrace(gates, kPostCallInstallGraceMs))
             detail << QStringLiteral("grace left %1 s")
                           .arg(talq::postCallGraceRemainingMs(gates, kPostCallInstallGraceMs) / 1000);
-        qInfo().noquote() << "Update: auto-install held by" << note
-                          << (detail.isEmpty() ? QString() : QStringLiteral("(%1)").arg(detail.join(QStringLiteral("; "))))
-                          << (note == m_lastInstallGateNote
-                                  ? QStringLiteral("-- still held after %1 min").arg((now - m_installHeldSinceMs) / 60000)
-                                  : QString());
+        // The detail names rooms and files: the debug log only. The update log
+        // gets the gate names and how long.
+        const QString head = QStringLiteral("Update: auto-install held by ") + note;
+        const QString stillHeld = note == m_lastInstallGateNote
+            ? QStringLiteral(" -- still held after %1 min").arg((now - m_installHeldSinceMs) / 60000)
+            : QString();
+        const QString withDetail = detail.isEmpty()
+            ? QString()
+            : QStringLiteral(" (%1)").arg(detail.join(QStringLiteral("; ")));
+        logUpdateLine(head + withDetail + stillHeld, head + stillHeld);
     }
     if (note != m_lastInstallGateNote) m_lastInstallGateChangeMs = now;
     if (m_lastInstallGateNote.isEmpty() && !note.isEmpty()) m_installHeldSinceMs = now;   // the hold begins
@@ -5465,6 +5766,17 @@ bool MainWindow::hasUnsentComposerText() const
                                        m_composerDrafts, m_activeConvToken);
 }
 
+QVector<talq::OutboxMessage> MainWindow::outboxForInstallGate() const
+{
+    QVector<talq::OutboxMessage> outbox = m_messages ? m_messages->outboxForInstallGate()
+                                                     : QVector<talq::OutboxMessage>();
+    if (m_conversations) {
+        for (talq::OutboxMessage &m : outbox)
+            m.roomListed = m_conversations->conversationForToken(m.roomToken, nullptr);
+    }
+    return outbox;
+}
+
 talq::InstallGateInputs MainWindow::installGateInputs() const
 {
     talq::InstallGateInputs in;
@@ -5478,9 +5790,9 @@ talq::InstallGateInputs MainWindow::installGateInputs() const
         ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_lastCallActiveMs)
         : -1;
     // Typed text the user has not sent, or sent text the server has not yet
-    // confirmed: the send outbox lives in memory only, and a restart discards it.
-    in.unsentText = hasUnsentComposerText()
-        || (m_messages && m_messages->hasPendingSends());
+    // confirmed: the send outbox lives in memory only, and a restart discards it --
+    // a given-up message too, whose bubble still offers Retry and Discard.
+    in.unsentText = hasUnsentComposerText() || talq::outboxHoldsInstall(outboxForInstallGate());
     in.attachmentStaged = m_composer && m_composer->hasStagedAttachment();
     in.voiceRecording = m_recorder && m_recorder->isRecording();
     // Between two files of a batch the progress is back at -1 for an instant: a queued file counts.
@@ -5498,8 +5810,9 @@ void MainWindow::startAutoInstallCountdown()
 {
     m_autoInstallActive = true;
     m_countdownNotified = false;
-    qInfo() << "Update: auto-install countdown started -- installs after" << autoInstallIdleMinutes()
-            << "min with no input to TalQ and no gate closed";
+    logUpdateLine(QStringLiteral("Update: auto-install countdown started -- installs after %1 min"
+                                 " with no input to TalQ and no gate closed")
+                      .arg(autoInstallIdleMinutes()));
     // Anchor the wait window to the moment the countdown (re)starts. A user who
     // was passively watching the download -- or sat idle through whatever had
     // stopped the countdown -- for longer than the configured idle threshold
@@ -5546,7 +5859,8 @@ void MainWindow::replaceWaitingInstaller()
     // (talq::installWhenDownloadLands). The installer itself is deleted --
     // when no download follows (a cancelled install replaced by a newer
     // version), nothing else would sweep it out of the temp directory, where
-    // stale installers draw AV alerts -- and with it goes everything that
+    // stale installers draw AV alerts (the session sweep, InstallerSweep.h,
+    // takes only versions up to the running one) -- and with it goes everything that
     // could still start it: the countdown, the post-call grace, a launch
     // deferred by a call.
     m_replacedInstall = talq::InstallRequest{m_installKind, m_explicitInstallRequested};
@@ -5657,8 +5971,9 @@ void MainWindow::maybeLaunchPendingInstaller()
     // The installer relaunches TalQ when it finishes. If TalQ is minimized or
     // in the tray now, the new version starts the same way (see the
     // constructor) instead of popping up over the user's work.
-    qInfo() << "Update: launching the installer (window"
-            << (isMinimized() || !isVisible() ? "minimized/hidden" : "visible") << ")";
+    logUpdateLine(QStringLiteral("Update: launching the installer (window %1)")
+                      .arg(isMinimized() || !isVisible() ? QStringLiteral("minimized/hidden")
+                                                         : QStringLiteral("visible")));
     m_settings.setValue(QStringLiteral("updates/relaunchMinimized"),
                         isMinimized() || !isVisible());
     m_settings.sync();
@@ -5777,22 +6092,39 @@ void MainWindow::playAudioAttachment(int fileId, const QString &fileName,
     QDir().mkpath(dir);
     // The id keeps the name unique; the suffix keeps the decoder's type guess
     // honest, since playbin's typefind is happier with a plausible extension.
-    const QString suffix = QFileInfo(fileName).suffix();
+    // It comes from the sender's file name, so only letters and digits are
+    // kept (LocalFileName.h): "x.mp3:s" would name an NTFS stream, not a file.
+    const QString suffix = talq::safeCacheSuffix(QFileInfo(fileName).suffix());
     const QString dest = dir + QStringLiteral("/%1").arg(fileId)
                          + (suffix.isEmpty() ? QString() : QLatin1Char('.') + suffix);
 
-    // A one-shot connection: saveFileAs is shared with the image viewer, so a
-    // permanent handler here would try to play whatever that saved next.
-    auto *conn = new QMetaObject::Connection;
-    *conn = connect(m_messages, &MessageListModel::fileSavedAs, this,
-                    [this, conn, fileId, dest](const QString &savePath) {
+    // Wait for THIS fetch to end, either way, then drop both handlers: saveFileAs
+    // is shared with the image viewer, so a permanent handler here would try to
+    // play whatever that saved next. The failure edge matters as much as the
+    // success one: until m_audioFetching lets go of the id, every click on the clip
+    // returns above, so a fetch that ended without the file (the model has already
+    // said why) must clear it too, and the next click tries again. Both are
+    // connected BEFORE the call, which can fail synchronously.
+    struct FetchWait { QMetaObject::Connection saved, failed; };
+    auto *wait = new FetchWait;
+    const auto finish = [this, wait, fileId]() {
+        disconnect(wait->saved);
+        disconnect(wait->failed);
+        delete wait;
+        m_audioFetching.remove(fileId);
+    };
+    wait->saved = connect(m_messages, &MessageListModel::fileSavedAs, this,
+                          [this, finish, fileId, dest](const QString &savePath) {
         if (savePath != dest)
             return;                       // some other save finished first
-        disconnect(*conn);
-        delete conn;
-        m_audioFetching.remove(fileId);
+        finish();
         m_audioCache.insert(fileId, savePath);
         m_audio->play(fileId, savePath);
+    });
+    wait->failed = connect(m_messages, &MessageListModel::fileSaveFailed, this,
+                           [finish, dest](const QString &destPath) {
+        if (destPath == dest)
+            finish();
     });
 
     m_messages->saveFileAs(fileId, fileName, dest);
@@ -5803,7 +6135,7 @@ void MainWindow::scheduleReminder(int messageId, const QDateTime &when)
     const QString token = m_messages ? m_messages->conversationToken() : QString();
     if (token.isEmpty() || messageId <= 0 || !when.isValid()) return;
     m_api->setMessageReminder(token, messageId, when, this,
-        [this, when](bool ok, const QString &error) {
+        [this, when](bool ok, int status, const QString &errorCode) {
             if (ok) {
                 // Confirms the click the user just made, so DND still shows it.
                 m_notifications->notifyFeedback(tr("Reminder set"),
@@ -5811,8 +6143,21 @@ void MainWindow::scheduleReminder(int messageId, const QDateTime &when)
                         .arg(when.toString(QStringLiteral("ddd d MMM, HH:mm"))),
                     false, QString());
             } else {
-                QMessageBox::warning(this, tr("Reminder not set"),
-                    error.isEmpty() ? tr("Nextcloud refused the reminder.") : error);
+                // Talk's code is mapped, never shown (TalkRefusalPolicy.h).
+                QString why;
+                switch (talq::classifyTalkRefusal(talq::TalkRequest::SetReminder, status,
+                                                  errorCode.toStdString())) {
+                case talq::TalkRefusal::NoConnection:
+                    why = tr("TalQ could not reach the server."); break;
+                case talq::TalkRefusal::MessageGone:
+                    why = tr("That message is no longer there."); break;
+                case talq::TalkRefusal::TooManyRequests:
+                    why = tr("The server is limiting how many reminders can be set right now. "
+                             "Try again later."); break;
+                default:
+                    why = tr("Nextcloud refused the reminder."); break;
+                }
+                QMessageBox::warning(this, tr("Reminder not set"), why);
             }
         });
 }
@@ -6691,6 +7036,13 @@ bool MainWindow::createFolderInteractive(const QString &scope, QString *outId)
         reportFolderResult(r, *typed);
         return false;
     }
+    // The store keeps kMaxFolderNameChars code points; a cut name would otherwise
+    // just appear shorter in the sidebar with no word why. About 4 s, as below.
+    bool shortened = false;
+    talq::normaliseFolderName(*typed, &shortened);
+    if (shortened)
+        showToastFor(tr("The folder name was shortened to %1 characters.")
+                         .arg(talq::kMaxFolderNameChars), 4000);
     return true;
 }
 
@@ -6751,6 +7103,13 @@ void MainWindow::renameFolderInteractive(const QString &scope, const QString &fo
         return;
     }
     reportFolderResult(r, *typed);
+    // Also on Unchanged: a long name whose first 40 characters are the current
+    // name changes nothing, and the toast says why.
+    bool shortened = false;
+    talq::normaliseFolderName(*typed, &shortened);
+    if (shortened && !talq::isRefusal(r))
+        showToastFor(tr("The folder name was shortened to %1 characters.")
+                         .arg(talq::kMaxFolderNameChars), 4000);
 }
 
 void MainWindow::fileChatInFolder(const QString &scope, const QString &token,
@@ -6830,6 +7189,9 @@ void MainWindow::showFolderHeaderMenu(const QString &folderId, qreal globalX, qr
     QAction *down   = menu->addAction(tr("Move down"));
     up->setEnabled(idx > 0);        // the one that cannot move is greyed out
     down->setEnabled(idx < last);
+    // The whole list into name order; greyed out when it already is (FolderLogic.h, "Folder order").
+    QAction *sortAz = menu->addAction(tr("Sort folders A to Z"));
+    sortAz->setEnabled(!talq::foldersInNameOrder(st));
     menu->addSeparator();
     // No confirmation (spec D15): deleting a folder loses nothing, its chats go back to Other.
     QAction *del = menu->addAction(tr("Delete folder"));
@@ -6846,6 +7208,10 @@ void MainWindow::showFolderHeaderMenu(const QString &folderId, qreal globalX, qr
     connect(down, &QAction::triggered, this, [this, scope, folderId]() {
         if (folderScopeIs(scope))
             reportFolderResult(m_folders->moveFolder(folderId, +1));
+    });
+    connect(sortAz, &QAction::triggered, this, [this, scope]() {
+        if (folderScopeIs(scope))
+            reportFolderResult(m_folders->sortFoldersByName());
     });
     connect(del, &QAction::triggered, this, [this, scope, folderId]() {
         if (folderScopeIs(scope))
@@ -7079,6 +7445,10 @@ void MainWindow::openConversationInfo()
     });
     connect(dlg, &ConversationInfoDialog::roomDeleted, this,
             [this, infoToken = m_activeConvToken]() {
+        // Left or deleted: a recording started here has nowhere to go. Discarded BEFORE Home, which
+        // would otherwise send it, because the list still holds the room until the refresh lands.
+        if (m_recorder && m_recorder->isRecording() && m_voiceStart.token == infoToken)
+            discardVoiceRecordingRoomGone();
         m_conversations->refresh();
         // Drop the user back to Home — the room they were viewing is gone.
         emit m_sidebar->homeRequested();

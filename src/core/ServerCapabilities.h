@@ -76,6 +76,12 @@ inline const char *const CAP_BREAKOUT_ROOMS = "breakout-rooms-v1";
 inline const char *const CAP_TALK_POLLS = "talk-polls";
 inline const char *const CAP_TALK_POLLS_DRAFTS = "talk-polls-drafts";
 inline const char *const CAP_CHAT_SUMMARY = "chat-summary-api";
+// Talk 23. Gates the whole /chat/{token}/schedule family (list, create, edit,
+// delete). A local feature, and in spreed v25.0.7's lib/Capabilities.php it is
+// in both FEATURES and LOCAL_FEATURES with no condition, so `features` carries it
+// on every server new enough to have the endpoints. An older server answers them
+// with 404.
+inline const char *const CAP_SCHEDULED_MESSAGES = "scheduled-messages";
 
 // Talk 25 (Nextcloud 35). Read out of spreed v25.0.7's lib/Capabilities.php, not
 // docs/: preserve-conversation, classified-conversations, announcement-preset
@@ -177,6 +183,8 @@ public:
     // ⚠ Present only when the server has an AI text provider installed.
     // The capability IS the availability check.
     bool supportsChatSummary() const { return has(CAP_CHAT_SUMMARY); }
+    // "Send later" and "Manage scheduled…" in the composer's send menu.
+    bool supportsScheduledMessages() const { return has(CAP_SCHEDULED_MESSAGES); }
 
     // --- Talk 25 gates ----------------------------------------------------
     // These license ACTIONS (a request to an endpoint an older server answers

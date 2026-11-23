@@ -390,6 +390,11 @@ FolderResult FolderStore::moveFolder(const QString &id, int delta)
     return apply([&](FolderState &s) { return talq::moveFolder(s, id, delta); });
 }
 
+FolderResult FolderStore::sortFoldersByName()
+{
+    return apply([](FolderState &s) { return talq::sortFoldersByName(s); });
+}
+
 FolderResult FolderStore::assign(const QString &token, const QString &folderId)
 {
     return apply([&](FolderState &s) { return talq::assignToken(s, token, folderId); });

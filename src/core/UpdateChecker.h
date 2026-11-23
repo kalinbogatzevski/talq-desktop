@@ -4,6 +4,8 @@
 #include <QString>
 #include <QTimer>
 
+#include <string>
+
 class QNetworkAccessManager;
 class QNetworkReply;
 class QFile;
@@ -44,6 +46,12 @@ public:
     bool betaChannelEnabled() const;
     void setBetaChannelEnabled(bool on);
 
+    // Removes installers of the running version and older that earlier updates left in the temp
+    // folder this class downloads into (InstallerSweep.h). Never the one being downloaded, nor
+    // `waitingInstaller`, the one an install is waiting on. Runs on the calling thread (a listing
+    // of the temp folder, as startDownload() does); MainWindow calls it once, a minute after start.
+    void sweepSpentInstallers(const QString &waitingInstaller);
+
 signals:
     void updateAvailable(const UpdateChecker::Manifest &m);
     void downloadProgress(qreal percent);
@@ -80,6 +88,9 @@ private:
     void onDownloadFinished(QNetworkReply *reply, QFile *outFile);
     bool verifySha256(const QString &filePath, const QString &expectedHex);
     static QString brandKeyForThisBuild();
+    // The channel prefix of this build's installer names ("" for the generic build), as
+    // InstallerSweep.h takes it.
+    static std::string installerChannel();
     static bool versionNewer(const QString &candidate, const QString &current);
 
     QNetworkAccessManager *m_nam;

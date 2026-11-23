@@ -140,6 +140,8 @@ void talqTerminateHandler()
 #include "core/TalqLog.h"
 #include "core/ShutdownWatchdog.h"
 #include "core/TempFileLogic.h"
+#include "core/LogArchive.h"
+#include "core/UpdateLog.h"
 #include "ui/MainWindow.h"
 #include "core/CtiService.h"
 #include "ui/NotificationPopup.h"
@@ -357,25 +359,21 @@ int main(int argc, char *argv[])
         // talq_debug.log name (the crash backstop + in-app viewer read it).
         // PRIMARY-only: a secondary instance must never archive/truncate the
         // primary's live log (see the single-instance note above).
+        // When the live log is held open by another process (the installer of
+        // an automatic update inherits it), the rename fails and the log is
+        // COPIED instead (LogArchive.h); what happened is said in the new log
+        // and in talq_update.log, which is never truncated (UpdateLog.h).
+        QString archiveNote;
         if (isPrimary) {
-            const QString logDir = QFileInfo(logPath).absolutePath();
-            if (QFile::exists(logPath)) {
-                QDateTime mtime = QFileInfo(logPath).lastModified();
-                if (!mtime.isValid()) mtime = QDateTime::currentDateTime();
-                const QString archived = logDir + "/talq_debug_"
-                    + mtime.toString("yyyyMMdd_HHmmss") + ".log";
-                QFile::remove(archived);          // same-second restart → overwrite
-                QFile::rename(logPath, archived);
-            }
-            // Prune oldest archives, keep the most recent N sessions. Names are
-            // timestamped so QDir::Name sort is chronological (oldest first).
+            const talq::logarchive::Result archived = talq::logarchive::archivePrevious(logPath);
+            archiveNote = talq::logarchive::describe(archived);
+            // Keep the most recent N sessions.
             constexpr int kKeepSessions = 12;
-            QDir d(logDir);
-            const QStringList olds = d.entryList(
-                QStringList() << QStringLiteral("talq_debug_*.log"),
-                QDir::Files, QDir::Name);
-            for (int i = 0; i < olds.size() - kKeepSessions; ++i)
-                QFile::remove(d.absoluteFilePath(olds.at(i)));
+            talq::logarchive::pruneArchives(logPath, kKeepSessions);
+            talq::updatelog::g_path = talq::updatelog::pathBeside(logPath);
+            talq::updatelog::g_version = QStringLiteral(TALQ_VERSION);
+            talq::updatelog::note(QStringLiteral("TalQ started; previous log: ")
+                                  + talq::logarchive::summary(archived));
         }
         // Redirect C stderr so GStreamer / any fprintf output is captured
         // (Release builds have no attached console). If freopen fails, stderr
@@ -454,6 +452,8 @@ int main(int argc, char *argv[])
                               << (verbose ? (debugRequested ? "verbose (heavy GST trace)" : "detailed")
                                           : "minimal (Settings opted out)")
                               << "logging enabled; log at" << logPath;
+            if (!archiveNote.isEmpty())
+                qWarning().noquote() << "[TalQ] Log:" << archiveNote;
         } else if (isPrimary) {
             // PRIMARY-only: fp==nullptr here means freopen genuinely FAILED.
             // (A secondary instance has fp==nullptr by design — it skipped
@@ -1541,7 +1541,8 @@ int main(int argc, char *argv[])
     // left in %TEMP% -- a pasted image, a voice note, a copy of a file made for an upload. A normal
     // session removes its own once the share succeeded; this is what a crash, a refused upload or
     // a quit mid-upload leaves. By exact name shape and by age on BOTH clocks; TempFileLogic.h
-    // lists what it never touches (the update installer above all).
+    // lists what it never touches (the update installer above all; MainWindow sweeps spent
+    // installers separately, InstallerSweep.h).
     QTimer::singleShot(60'000, &app, []() {
         (void)QtConcurrent::run([]() {
             const talq::TempSweepResult r = talq::sweepStaleTempFiles(

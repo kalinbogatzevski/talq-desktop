@@ -5,6 +5,7 @@
 
 #include "AppSettings.h"
 #include "ChecksumAsset.h"
+#include "InstallerSweep.h"
 #include "VersionCompare.h"
 
 #include <QCryptographicHash>
@@ -367,10 +368,13 @@ void UpdateChecker::startDownload()
     // signed installer as expected; a generic "talq-update.exe" can
     // trigger heuristic quarantine that silently leaves a zero-byte
     // file behind and breaks subsequent launch. Falls back to the old
-    // generic name if the manifest somehow doesn't carry one.
-    QString assetName = m_lastManifest.assetFilename;
-    if (assetName.isEmpty())
-        assetName = QStringLiteral("TalQ-Setup.exe");
+    // generic name if the manifest doesn't carry one, or carries one that is
+    // not exactly an installer's name (InstallerSweep.h): it becomes a path.
+    const QString assetName = QString::fromStdString(talq::installerDownloadName(
+        m_lastManifest.assetFilename.toStdString(), installerChannel()));
+    if (assetName != m_lastManifest.assetFilename)
+        qWarning() << "UpdateChecker: asset name" << m_lastManifest.assetFilename
+                   << "is not an installer name; saving it as" << assetName;
     m_downloadPath = tmp + QStringLiteral("/") + assetName;
     qInfo() << "UpdateChecker: downloading" << assetName;
     // Snapshot the digest we're downloading AGAINST now: a poll landing
@@ -439,6 +443,27 @@ void UpdateChecker::startDownload()
         m_currentFile  = nullptr;
         onDownloadFinished(reply, out);
     });
+}
+
+std::string UpdateChecker::installerChannel()
+{
+    // A branded installer is "<channel>-TalQ-v<ver>-Setup.exe"; the generic one has no prefix.
+    const QString key = brandKeyForThisBuild();
+    return key == QLatin1String("generic") ? std::string() : key.toStdString();
+}
+
+void UpdateChecker::sweepSpentInstallers(const QString &waitingInstaller)
+{
+    // m_downloadPath is the installer being downloaded, or the last one downloaded, which is
+    // what readyToLaunch handed out: kept, as is the one an install is waiting on.
+    const talq::InstallerSweepResult r = talq::sweepSpentInstallers(
+        QStandardPaths::writableLocation(QStandardPaths::TempLocation),
+        std::string(TALQ_VERSION), installerChannel(), {m_downloadPath, waitingInstaller});
+    if (r.removed || r.failed)
+        qInfo().noquote() << "UpdateChecker: removed" << r.removed
+                          << "installer(s) of this version or older,"
+                          << (r.bytes / (1024 * 1024)) << "MiB;" << r.failed
+                          << "could not be removed";
 }
 
 void UpdateChecker::onDownloadProgress(qint64 received, qint64 total)

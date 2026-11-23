@@ -20,11 +20,13 @@
 #include <QByteArray>
 #include <QByteArrayView>
 #include <QChar>
+#include <QCollator>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QLocale>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -343,8 +345,12 @@ inline void placeBeforeFollowing(QStringList &out, QSet<QString> &placed,
 //
 // The result is never truncated to fit: over a cap it is REFUSED (D13), because sanitiseFolderState
 // would silently drop the folders past 50 together with their chats.
+//
+// `locale` is only for Step 5's "is this list in name order" test, and must be the one createFolder
+// and renameFolder use (the default: the system's).
 inline MergeResult mergeFolderStates(const FolderState &base, const FolderState &local,
-                                     const FolderState &remote, MergePrefer prefer)
+                                     const FolderState &remote, MergePrefer prefer,
+                                     const QLocale &locale = QLocale())
 {
     using namespace folder_sync_detail;
     const bool preferLocal = prefer == MergePrefer::Local;
@@ -494,11 +500,12 @@ inline MergeResult mergeFolderStates(const FolderState &base, const FolderState 
     }
 
     // Step 5, order. `common` = the survivors in base (by Step 2 they are on both sides). Their
-    // order: the shared one if both sides agree; else the side that changed it; else prefer's.
-    // Then the new survivors: first every one the remote has (remote-only, pairs, and ids new on
-    // both sides), in remote order, each placed by the REMOTE list; then the local-only ones, in
-    // local order, each placed by the (paired) LOCAL list. Every id not in the base survived
-    // Step 2.
+    // order: the shared one if both sides agree; else the side that changed it; else prefer's,
+    // except that a local order which only kept the list in name order does not count as a change
+    // by hand (below). Then the new survivors: first every one the remote has (remote-only, pairs,
+    // and ids new on both sides), in remote order, each placed by the REMOTE list; then the
+    // local-only ones, in local order, each placed by the (paired) LOCAL list. Every id not in the
+    // base survived Step 2.
     const QStringList baseOrder = folderIdsInOrder(base);
     const QStringList localOrder = folderIdsInOrder(loc);
     const QStringList remoteOrder = folderIdsInOrder(remote);
@@ -520,8 +527,20 @@ inline MergeResult mergeFolderStates(const FolderState &base, const FolderState 
         order = relR;
     else if (relR == relB)
         order = relL;
-    else
-        order = preferLocal ? relL : relR;
+    else if (!preferLocal)
+        order = relR;
+    else {
+        // Both sides changed it. In a list that is in name order a rename moves the folder to its
+        // new place (FolderLogic.h, "Folder order"), so a base and a local list that are both in
+        // name order mean the local order moved only to stay in name order: nothing was arranged
+        // here by hand, so the remote's order is kept and the local renames are applied in it
+        // (Step 3). Judged on the base and the local list alone, so merging the result again
+        // decides the same way (E20). Any other local change wins, as before.
+        const QCollator c = folderNameCollator(locale);
+        const bool localKeptNameOrder = folder_detail::inNameOrder(base.folders, c)
+                                        && folder_detail::inNameOrder(local.folders, c);
+        order = localKeptNameOrder ? relR : relL;
+    }
 
     QSet<QString> placed(order.cbegin(), order.cend());
     for (int i = 0; i < remoteOrder.size(); ++i) {

@@ -1,5 +1,6 @@
 #include "ThreadsPainter.h"
 #include "models/ThreadListModel.h"
+#include "core/TooltipText.h"
 #include "EmojiTextRenderer.h"
 #include <QPainter>
 #include <QPainterPath>
@@ -255,7 +256,8 @@ bool ThreadsPainter::event(QEvent *e)
         if (row >= 0 && row < m_layouts.size()) {
             const ThreadLayout &tl = m_layouts[row];
             if (tl.titleElided && tl.titleRect.contains(he->pos())) {
-                QToolTip::showText(he->globalPos(), tl.title, this);
+                // A topic title is typed by whoever started it; a tooltip is rich text.
+                QToolTip::showText(he->globalPos(), talq::plainTooltipHtml(tl.title), this);
                 return true;
             }
         }

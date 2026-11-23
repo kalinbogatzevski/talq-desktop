@@ -42,4 +42,18 @@ inline QPoint keepFrameOnScreen(const QRect &frame, const QRect &available)
     return p;
 }
 
+// Where a window saved as its FRAME's top-left corner plus its CLIENT size opens again, inside
+// `available` (the work area of the screen that holds the saved spot, or the primary screen's
+// when none does: the monitor it was on is gone). The result's corner is the frame's (for
+// move()) and its size the client's (for resize()). The size is bounded to the area first, then
+// the corner is kept on screen. Before the window is shown its frame is not known, so the frame
+// is taken as the client size: the window can still overhang the bottom or the right edge by
+// the frame's thickness until something looks again with the real frame.
+inline QRect placeSavedWindow(const QPoint &frameTopLeft, const QSize &clientSize,
+                              const QRect &available)
+{
+    const QSize size = clientSize.boundedTo(available.size());
+    return QRect(keepFrameOnScreen(QRect(frameTopLeft, size), available), size);
+}
+
 } // namespace talq::screenfit

@@ -1,6 +1,7 @@
 #include "core/MarkdownHtml.h"
 
 #include "core/BareUrlLogic.h"
+#include "core/TaskListLogic.h"
 
 #include <md4c.h>
 
@@ -182,6 +183,7 @@ struct Renderer {
     int imageDepth = 0;         // >0: inside an image's alt text, no inline tags
     int linkDepth = 0;          // >0: inside a link
     bool inCodeBlock = false;
+    int taskOrdinal = 0;        // task items seen so far (TaskListLogic.h)
     int items = 0;              // list items, table rows and cells seen (the budget)
     int rows = 0;
     int cells = 0;
@@ -307,11 +309,20 @@ int enterBlock(MD_BLOCKTYPE type, void *detail, void *user)
             return 1;                       // over budget: toHtml falls back to plain text
         }
         const auto *d = static_cast<MD_BLOCK_LI_DETAIL *>(detail);
-        if (r.boxEmitted.isEmpty() || r.boxEmitted.last())
-            r.out += QLatin1String("<li>");
-        else
+        if (r.boxEmitted.isEmpty() || r.boxEmitted.last()) {
+            // A task item carries its number (TaskListLogic.h): it is how a
+            // click on its box is known to be a box, and which one. Counted for
+            // every task item, a flattened one too, so the numbers are the same
+            // whatever the depth.
+            if (d->is_task)
+                r.out += talq::tasklist::itemOpenTag(r.taskOrdinal);
+            else
+                r.out += QLatin1String("<li>");
+        } else {
             r.out += QLatin1String("\n- ");           // list too deep: flatten
+        }
         if (d->is_task) {
+            ++r.taskOrdinal;
             // A list of check boxes has no bullets (Talk: ul.contains-task-list).
             // The tag was written before this item was seen, so mark it now.
             if (!r.listTag.isEmpty() && r.listTag.last() >= 0) {

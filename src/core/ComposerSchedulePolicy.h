@@ -38,12 +38,42 @@ inline ScheduleBlock scheduleBlockFor(bool editing, bool stagedFile, bool record
     return ScheduleBlock::None;
 }
 
-// "Send silently" sets a flag that only a plain message honours: an edit is sent as the original
-// was (Talk keeps the original's silent flag) and a file share carries no silent flag at all. The
-// menu must not promise "no notification" where it cannot be kept.
-inline bool silentSendIsHonoured(bool editing, bool stagedFile)
+// Why the step after a time was picked (ComposerWidget::scheduleAt) scheduled nothing. The box's
+// own state is judged again there -- the Custom-time dialog is a nested event loop of unbounded
+// length -- so every ScheduleBlock can come back; two reasons more can only arise between the
+// pick and now. The composer words them (scheduleRefusalNote) and shows them in its note line:
+// without it a refused pick looked like nothing had happened.
+enum class SchedulePickRefusal {
+    None,          // it was scheduled
+    Unavailable,   // the server stopped offering scheduled messages (a re-login meanwhile)
+    RoomChanged,   // another conversation is open now
+    Editing,
+    StagedFile,
+    Recording,
+    Empty,
+    TooLong,
+};
+
+inline SchedulePickRefusal pickRefusalFor(ScheduleBlock block)
 {
-    return !editing && !stagedFile;
+    switch (block) {
+    case ScheduleBlock::Editing:    return SchedulePickRefusal::Editing;
+    case ScheduleBlock::StagedFile: return SchedulePickRefusal::StagedFile;
+    case ScheduleBlock::Recording:  return SchedulePickRefusal::Recording;
+    case ScheduleBlock::Empty:      return SchedulePickRefusal::Empty;
+    case ScheduleBlock::TooLong:    return SchedulePickRefusal::TooLong;
+    case ScheduleBlock::None:       break;
+    }
+    return SchedulePickRefusal::None;
+}
+
+// "Send silently" sets a flag that a new message honours, typed or a file share (the share's
+// talkMetaData carries `silent`, on every file of a batch), but an edit does not: it is sent as the
+// original was (Talk keeps the original's silent flag). The menu must not promise "no
+// notification" where it cannot be kept.
+inline bool silentSendIsHonoured(bool editing)
+{
+    return !editing;
 }
 
 } // namespace talq

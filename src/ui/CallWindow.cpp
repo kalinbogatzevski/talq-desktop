@@ -2,6 +2,7 @@
 #include "CallStage.h"
 #include "CallPipWidget.h"
 #include "SharePickerDialog.h"
+#include "ui/WindowOnScreen.h"
 
 #include <QVBoxLayout>
 #include <QCloseEvent>
@@ -124,13 +125,14 @@ void CallWindow::toggleFullscreen()
         m_fullscreen = false;
         showNormal();
         if (m_normalGeom.isValid()) setGeometry(m_normalGeom);
+        keepFrameOnScreen();
     } else {
         QScreen *sc = screen();
         qInfo().nospace() << "CallWindow: ENTER fullscreen on screen "
                           << (sc ? sc->name() : QStringLiteral("?"))
                           << " " << (sc ? sc->geometry() : QRect())
                           << " dpr=" << (sc ? sc->devicePixelRatio() : 0.0);
-        m_normalGeom = geometry();
+        m_normalGeom = restorableGeometry();
         m_fullscreen = true;
         showFullScreen();
     }
@@ -167,7 +169,10 @@ void CallWindow::enterPipDock()
     // restore it first so the flag/geometry change below actually shows.
     if (isMinimized()) setWindowState(windowState() & ~Qt::WindowMinimized);
     if (m_fullscreen) toggleFullscreen();
-    m_normalGeom = geometry();
+    // Before the flag and geometry changes below: setGeometry() drops the maximized state, and
+    // with it the normal geometry Qt keeps for a maximized window. (X on the call window and a
+    // minimize both dock through here.)
+    m_normalGeom = restorableGeometry();
     m_pipDocked = true;
     if (m_stage) m_stage->hide();
     if (m_pipWidget) m_pipWidget->show();
@@ -209,10 +214,40 @@ void CallWindow::exitPipDock()
     if (m_stage) m_stage->show();
     setMinimumSize(640, 480);   // restore the normal-window floor dropped in enterPipDock()
     setWindowFlags(Qt::Window);
+    // The clamp works on the CLIENT rect (it still brings a rect from a monitor that went away
+    // while docked onto a live one before the first paint); the window is framed again, and
+    // its title bar sits above that rect, so the frame is checked once it is shown.
     if (m_normalGeom.isValid()) setGeometry(clampToWorkArea(m_normalGeom));
     show();
     raise();
     activateWindow();
+    keepFrameOnScreen();
+}
+
+// A maximized or full-screen window's geometry() is the client area of the MAXIMIZED window:
+// put back as an ordinary framed window, its title bar lands above the top of the work area,
+// out of reach. The normal (restored) geometry is what to come back to.
+QRect CallWindow::restorableGeometry() const
+{
+    if (isMaximized() || isFullScreen()) {
+        const QRect n = normalGeometry();
+        if (n.isValid())
+            return n;
+    }
+    return geometry();
+}
+
+// The framed call window's whole frame inside the work area of its screen, now and once more
+// when the event loop is back: after the dock's flag change the native window is shown again,
+// and its frame settles around that show. The second look is skipped once the window is
+// docked again or full screen (or hidden: the call ended, see keepWindowOnScreen).
+void CallWindow::keepFrameOnScreen()
+{
+    talq::screenfit::keepWindowOnScreen(this);
+    QTimer::singleShot(0, this, [this] {
+        if (!m_pipDocked && !m_fullscreen)
+            talq::screenfit::keepWindowOnScreen(this);
+    });
 }
 
 void CallWindow::minimizeDock()

@@ -1,4 +1,5 @@
 #include "models/Conversation.h"
+#include "core/ChatSyncLogic.h"
 
 #include <QJsonArray>
 
@@ -78,6 +79,15 @@ Conversation Conversation::fromJson(const QJsonObject &json)
         c.lastMessageSilent = lastMsg["silent"].toBool();
         c.lastMessageId = lastMsg["id"].toInt();
         c.lastMessageParams = lastMsg["messageParameters"].toObject();
+        // The room's own actorType/actorId are THIS user's in the room. An absent
+        // one never matches, so the entry is then judged as someone else's.
+        const QString roomActorId = json["actorId"].toString();
+        const bool own = !roomActorId.isEmpty()
+            && lastMsg["actorId"].toString() == roomActorId
+            && lastMsg["actorType"].toString() == json["actorType"].toString();
+        c.lastMessageReadable = talq::lastEntryIsReadable(
+            lastMsg["messageType"].toString().toStdString(),
+            lastMsg["systemMessage"].toString().toStdString(), own);
         // `threadId` is sent on EVERY message (it is the message's own id when it
         // is in no topic); only `isThread` says it really is one. Same rule as
         // Message::fromJson.

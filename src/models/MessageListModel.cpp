@@ -1,4 +1,6 @@
+#include "core/DownloadMark.h"
 #include "core/ForwardLogic.h"
+#include "core/LocalFileName.h"
 #include "core/MultiFileLogic.h"
 #include "models/MessageListModel.h"
 #include <QPointer>
@@ -6,6 +8,8 @@
 #include "core/ChatSyncLogic.h"
 #include "core/ScheduleFailurePolicy.h"
 #include "core/SendRetryPolicy.h"
+#include "core/TalkRefusalPolicy.h"
+#include "core/TaskListLogic.h"
 #include "core/TalqLog.h"
 #include "core/TempFileLogic.h"
 #include "core/UploadPathLogic.h"
@@ -1418,7 +1422,13 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     if (TalqLog::g_verbose)
         qDebug().nospace() << "[BUG1] onMessagesReceived passedDedupFilter=" << newMsgs.size()
                       << " of " << messages.size() << " incoming";
-    if (newMsgs.isEmpty()) return;
+    if (newMsgs.isEmpty()) {
+        // Nothing new on screen (a reaction, an edit, our own echo), but the poll
+        // has moved on: when the room list already knows a reaction as the
+        // room's last entry, this is the moment it may be marked read.
+        markHiddenRowsRead();
+        return;
+    }
 
     // Save only the newly received messages to cache (not the full list)
     QVector<Message> toCache = newMsgs;
@@ -1525,11 +1535,20 @@ QString MessageListModel::outboxOwner() const
     return m_api->user() + QLatin1Char('@') + m_api->serverUrl();
 }
 
-bool MessageListModel::hasPendingSends() const
+QVector<talq::OutboxMessage> MessageListModel::outboxForInstallGate() const
 {
-    for (const auto &e : m_outbox)
-        if (!e.permanent) return true;
-    return false;
+    QVector<talq::OutboxMessage> out;
+    out.reserve(m_outbox.size());
+    for (const auto &e : m_outbox) {
+        talq::OutboxMessage m;
+        m.roomToken = e.token;
+        m.sentAtMs = e.sentAtMs;
+        m.givenUp = e.permanent;
+        m.inFlight = e.inFlight;
+        m.lastStatus = e.lastStatus;
+        out.append(m);
+    }
+    return out;
 }
 
 bool MessageListModel::canRetry(int tempId) const
@@ -2192,10 +2211,10 @@ void MessageListModel::setAutoMentionBot(const QString &mentionSlug)
     m_autoMentionBot = mentionSlug.trimmed();
 }
 
-// The text that is actually POSTed for `text`: the bot's @-mention goes in front in a one-to-one
-// room that has exactly one bot, unless this is a reply or the text already addresses the bot
-// (the gate is explained in sendMessage). Public so the composer can measure what will really be
-// sent against the server's length limit instead of what is in the box.
+// The text that is actually POSTed for `text`, sent now or scheduled: the bot's @-mention goes in
+// front in a one-to-one room that has exactly one bot, unless this is a reply or the text already
+// addresses the bot (the gate is explained in sendMessage). Public so the composer can measure
+// what will really be sent against the server's length limit instead of what is in the box.
 QString MessageListModel::outgoingText(const QString &text, int replyToId) const
 {
     if (!m_autoMentionBot.isEmpty() && replyToId <= 0
@@ -2609,6 +2628,8 @@ void MessageListModel::clearLocalHistory()
     emit hasMoreHistoryChanged();
 }
 
+static QString messageRefusalText(talq::TalkRequest request, const QJsonObject &data, int status);
+
 void MessageListModel::deleteMessage(int messageId)
 {
     if (m_token.isEmpty() || messageId <= 0) return;
@@ -2626,15 +2647,74 @@ void MessageListModel::deleteMessage(int messageId)
 
     // Tell server
     QString path = "apps/spreed/api/v1/chat/" + m_token + "/" + QString::number(messageId);
-    m_api->del(path, [this](bool ok, const QJsonObject &, int) {
+    m_api->del(path, [this](bool ok, const QJsonObject &data, int status) {
         if (!ok)
-            emit errorOccurred("Failed to delete message");
+            emit errorOccurred(messageRefusalText(talq::TalkRequest::DeleteMessage, data, status));
     });
+}
+
+// The words for a refused edit, delete or pin of a chat message. TalkRefusalPolicy.h decides
+// which reason Talk's answer is; an unrecognised one keeps the old generic line.
+static QString messageRefusalText(talq::TalkRequest request, const QJsonObject &data, int status)
+{
+    using talq::TalkRefusal;
+    const TalkRefusal why = talq::classifyTalkRefusal(
+        request, status, data.value(QStringLiteral("error")).toString().toStdString());
+    switch (request) {
+    case talq::TalkRequest::EditMessage:
+        switch (why) {
+        case TalkRefusal::NoConnection:
+            return MessageListModel::tr("The message was not edited: TalQ could not reach the server.");
+        case TalkRefusal::TooOldToEdit:
+            return MessageListModel::tr("The message was not edited: a message can only be edited "
+                                        "for 24 hours after it was sent.");
+        case TalkRefusal::EmptyText:
+            return MessageListModel::tr("The message was not edited: the new text is empty.");
+        case TalkRefusal::TooLong:
+            return MessageListModel::tr("The message was not edited: the new text is too long.");
+        case TalkRefusal::NotYourMessage:
+            return MessageListModel::tr("The message was not edited: you are not allowed to change it.");
+        case TalkRefusal::MessageGone:
+            return MessageListModel::tr("The message was not edited: it is no longer there.");
+        case TalkRefusal::WrongKind:
+            return MessageListModel::tr("The message was not edited: this kind of message can't be edited.");
+        default:
+            return MessageListModel::tr("Failed to edit message (HTTP %1)").arg(status);
+        }
+    case talq::TalkRequest::DeleteMessage:
+        switch (why) {
+        case TalkRefusal::NoConnection:
+            return MessageListModel::tr("The message was not deleted: TalQ could not reach the server.");
+        case TalkRefusal::NotYourMessage:
+            return MessageListModel::tr("The message was not deleted: you are not allowed to delete it.");
+        case TalkRefusal::WrongKind:
+            return MessageListModel::tr("The message was not deleted: it was already deleted, or it is "
+                                        "a kind of message that can't be deleted.");
+        default:
+            return MessageListModel::tr("Failed to delete message");
+        }
+    case talq::TalkRequest::PinMessage:
+        switch (why) {
+        case TalkRefusal::NoConnection:
+            return MessageListModel::tr("The message was not pinned: TalQ could not reach the server.");
+        case TalkRefusal::MessageGone:
+            return MessageListModel::tr("The message was not pinned: it is no longer there.");
+        case TalkRefusal::WrongKind:
+            return MessageListModel::tr("The message was not pinned: this kind of message can't be pinned.");
+        case TalkRefusal::NotModerator:
+            return MessageListModel::tr("The message was not pinned: only moderators can pin messages.");
+        default:
+            return MessageListModel::tr("Failed to pin message");
+        }
+    default:
+        break;
+    }
+    return MessageListModel::tr("The server refused it (HTTP %1).").arg(status);
 }
 
 void MessageListModel::editMessage(int messageId, const QString &newText)
 {
-    if (m_token.isEmpty() || messageId <= 0) return;
+    if (m_token.isEmpty() || messageId <= 0) { emit editFinished(messageId, false); return; }
 
     int idx = -1;
     for (int i = 0; i < m_messages.size(); ++i) {
@@ -2642,6 +2722,7 @@ void MessageListModel::editMessage(int messageId, const QString &newText)
     }
     if (idx < 0) {
         emit errorOccurred(QStringLiteral("Cannot edit: message not found locally"));
+        emit editFinished(messageId, false);
         return;
     }
 
@@ -2652,10 +2733,10 @@ void MessageListModel::editMessage(int messageId, const QString &newText)
 
     m_api->put(path, body,
         [this, messageId, token](bool ok, const QJsonObject &data, int status) {
-            if (m_token != token) return;
+            if (m_token != token) { emit editFinished(messageId, ok); return; }
             if (!ok) {
-                emit errorOccurred(
-                    QStringLiteral("Failed to edit message (HTTP %1)").arg(status));
+                emit errorOccurred(messageRefusalText(talq::TalkRequest::EditMessage, data, status));
+                emit editFinished(messageId, false);
                 return;
             }
             // 0.40.1 fix (#33) — Talk's PUT /chat/{token}/{id} returns the
@@ -2672,7 +2753,7 @@ void MessageListModel::editMessage(int messageId, const QString &newText)
                     updatedObj = parent.toObject();
             }
             Message updated = Message::fromJson(updatedObj);
-            if (updated.id <= 0) return;
+            if (updated.id <= 0) { emit editFinished(messageId, true); return; }
             for (int i = 0; i < m_messages.size(); ++i) {
                 if (m_messages[i].id == messageId) {
                     // This response's `parent` is built without loadSelfReactions, so it never
@@ -2691,6 +2772,7 @@ void MessageListModel::editMessage(int messageId, const QString &newText)
                     break;
                 }
             }
+            emit editFinished(messageId, true);
         });
 }
 
@@ -2701,10 +2783,9 @@ void MessageListModel::pinMessage(int messageId)
     // POST to pin endpoint (no body needed)
     QJsonObject empty;
     QString path = "apps/spreed/api/v1/chat/" + m_token + "/" + QString::number(messageId) + "/pin";
-    m_api->post(path, empty, [this](bool ok, const QJsonObject &, int) {
-        if (!ok) {
-            emit errorOccurred("Failed to pin message");
-        }
+    m_api->post(path, empty, [this](bool ok, const QJsonObject &data, int status) {
+        if (!ok)
+            emit errorOccurred(messageRefusalText(talq::TalkRequest::PinMessage, data, status));
     });
 }
 
@@ -2728,15 +2809,15 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     if (m_token.isEmpty() || filePath.isEmpty()) return;
     FileSend fs;
     fs.path = filePath;
-    fs.caption = caption;
+    fs.share.caption = caption;
     fs.owned = deleteWhenShared;
     fs.token = m_token;
-    fs.threadId = m_threadId;
+    fs.share.threadId = m_threadId;
     enqueueFileSends({fs});
 }
 
 void MessageListModel::sendFilesWithCaption(const QStringList &filePaths, const QString &caption,
-                                            bool firstDeleteWhenShared)
+                                            bool firstDeleteWhenShared, bool silent, int replyToId)
 {
     QStringList paths;
     for (const QString &p : filePaths)
@@ -2757,11 +2838,13 @@ void MessageListModel::sendFilesWithCaption(const QStringList &filePaths, const 
     for (int i = 0; i < paths.size(); ++i) {
         FileSend fs;
         fs.path = paths.at(i);
-        fs.caption = i == 0 ? caption : QString();     // one caption, on the first file
+        fs.share.caption = i == 0 ? caption : QString();     // one caption, on the first file
         fs.owned = i == 0 && firstDeleteWhenShared;
         fs.name = unique.at(i);
         fs.token = m_token;
-        fs.threadId = m_threadId;
+        fs.share.threadId = m_threadId;
+        fs.share.replyToId = replyToId > 0 ? replyToId : 0;
+        fs.share.silent = silent;
         fs.batchIndex = i + 1;
         fs.batchTotal = paths.size();
         batch.append(fs);
@@ -2853,7 +2936,6 @@ void MessageListModel::clearFileQueue()
 void MessageListModel::startFileSend(const FileSend &fs)
 {
     const QString &filePath = fs.path;
-    const QString &caption = fs.caption;
     const bool deleteWhenShared = fs.owned;
     if (fs.token.isEmpty() || filePath.isEmpty()) return;
     const quint64 gen = ++m_uploadGen;     // this upload is now "the one in flight"
@@ -2934,7 +3016,7 @@ void MessageListModel::startFileSend(const FileSend &fs)
 
     if (fileSize >= chunkThreshold) {
         file.close();   // uploadFileChunked re-opens and streams it in slices
-        uploadFileChunked(readPath, fileName, fs.token, caption, tempCopy, fs.threadId, gen);
+        uploadFileChunked(readPath, fileName, fs.token, fs.share, tempCopy, gen);
         return;
     }
 
@@ -2962,8 +3044,8 @@ void MessageListModel::startFileSend(const FileSend &fs)
     });
 
     const QString token = fs.token;
-    const int threadId = fs.threadId;
-    connect(uploadReply, &QNetworkReply::finished, this, [this, uploadReply, fileName, token, caption, threadId, gen]() {
+    const FileShareMeta share = fs.share;
+    connect(uploadReply, &QNetworkReply::finished, this, [this, uploadReply, fileName, token, share, gen]() {
         uploadReply->deleteLater();
         if (gen != m_uploadGen) {              // given up on (and aborted): leave the shared state alone
             forgetPendingUpload(fileName);
@@ -2985,7 +3067,7 @@ void MessageListModel::startFileSend(const FileSend &fs)
 
         m_uploadProgress = 1.0;
         emit uploadProgressChanged();
-        shareUploadedFile(fileName, token, caption, threadId, gen);
+        shareUploadedFile(fileName, token, share, gen);
     });
 }
 
@@ -3011,6 +3093,25 @@ QString MessageListModel::attachmentFolder() const
 // QTextDocument::toPlainText(), which is why a forwarded message arrived as
 // plain text with every marker eaten. rawJson is the server's own bytes and the
 // only lossless copy we keep.
+// The {mention-*} parameters of a server message, and the keys of every other
+// rich object in it (rawBodyFor and taskToggledBodyFor).
+static void splitMessageParameters(const QJsonObject &rawJson,
+                                   std::vector<talq::MentionParam> *mentions,
+                                   std::vector<std::string> *otherKeys)
+{
+    const QJsonObject params = rawJson.value("messageParameters").toObject();
+    for (auto it = params.begin(); it != params.end(); ++it) {
+        const QJsonObject p = it.value().toObject();
+        if (it.key().startsWith(QLatin1String("mention"))) {
+            mentions->push_back({ it.key().toStdString(),
+                                  p.value("id").toString().toStdString(),
+                                  p.value("name").toString().toStdString() });
+        } else {
+            otherKeys->push_back(it.key().toStdString());
+        }
+    }
+}
+
 QString MessageListModel::rawBodyFor(int messageId) const
 {
     for (const Message &m : m_messages) {
@@ -3021,17 +3122,7 @@ QString MessageListModel::rawBodyFor(int messageId) const
 
         std::vector<talq::MentionParam> mentions;
         std::vector<std::string> otherKeys;
-        const QJsonObject params = m.rawJson.value("messageParameters").toObject();
-        for (auto it = params.begin(); it != params.end(); ++it) {
-            const QJsonObject p = it.value().toObject();
-            if (it.key().startsWith(QLatin1String("mention"))) {
-                mentions.push_back({ it.key().toStdString(),
-                                     p.value("id").toString().toStdString(),
-                                     p.value("name").toString().toStdString() });
-            } else {
-                otherKeys.push_back(it.key().toStdString());
-            }
-        }
+        splitMessageParameters(m.rawJson, &mentions, &otherKeys);
 
         // A poll / deck card / shared file is not prose. Upstream re-shares
         // those through their own endpoint; sending the raw "{object}" would
@@ -3044,6 +3135,55 @@ QString MessageListModel::rawBodyFor(int messageId) const
         // the "Forwarded from" line; editing must not.
         return QString::fromStdString(
             talq::forwardBody(raw.toStdString(), mentions, std::string()));
+    }
+    return QString();   // not in the model
+}
+
+// The box is located and flipped on the server's own text WITH its
+// {mention-*} placeholders, because that is what the chat rendered and
+// numbered (Message::fromJson renders it before substituting the mentions).
+// The mentions then go back as `@"<mention-id>"` (TaskListLogic.h), not
+// through rawBodyFor()'s forwardBody, which writes an @all as bold text and a
+// group or team as a user: nobody reviews a tick's text before it is sent.
+QString MessageListModel::taskToggledBodyFor(int messageId, int box, bool wasChecked,
+                                             const QString &selfUserId) const
+{
+    if (messageId <= 0 || box < 0 || selfUserId.isEmpty()) return QString();
+    for (const Message &m : m_messages) {
+        if (m.id != messageId) continue;
+
+        // Only the user's own markdown comment. A file share or a poll is not
+        // edited from TalQ; the server refuses an edit of anything but a comment.
+        if (m.actorType != QLatin1String("users") || m.actorId != selfUserId
+            || m.isSystem || !m.markdown || m.fileId != 0 || m.pollId != 0
+            || m.messageType != QLatin1String("comment"))
+            return QString();
+
+        const QString raw = m.rawJson.value("message").toString();
+        if (raw.isEmpty()) return QString();
+
+        std::vector<talq::MentionParam> mentions;
+        std::vector<std::string> otherKeys;
+        splitMessageParameters(m.rawJson, &mentions, &otherKeys);
+        if (talq::carriesRichObject(raw.toStdString(), otherKeys))
+            return QString();
+
+        const QString toggled = talq::tasklist::toggledTaskText(
+            raw, box, wasChecked,
+            [](const QString &text) { return Message::renderBodyHtml(text, true); });
+        if (toggled.isEmpty()) return QString();
+
+        // The text as it stands and the one to send must differ in exactly one
+        // character: the mark.
+        const QJsonObject params = m.rawJson.value("messageParameters").toObject();
+        bool okBefore = false, okAfter = false;
+        const QString before = talq::tasklist::mentionsForEdit(raw, params, &okBefore);
+        const QString after = talq::tasklist::mentionsForEdit(toggled, params, &okAfter);
+        if (!okBefore || !okAfter || before.size() != after.size()) return QString();
+        int differ = 0;
+        for (qsizetype i = 0; i < before.size(); ++i)
+            if (before.at(i) != after.at(i)) ++differ;
+        return differ == 1 ? after : QString();
     }
     return QString();   // not in the model
 }
@@ -3084,7 +3224,7 @@ void MessageListModel::shareExistingFile(const QString &path, const QString &tok
 }
 
 void MessageListModel::shareUploadedFile(const QString &fileName, const QString &token,
-                                         const QString &caption, int threadId, quint64 gen)
+                                         const FileShareMeta &share, quint64 gen)
 {
     qDebug() << "File uploaded, sharing to conversation" << token;
 
@@ -3100,15 +3240,21 @@ void MessageListModel::shareUploadedFile(const QString &fileName, const QString 
     // silently, in the feature 0.65.x had just shipped. The user saw their
     // upload vanish from the topic they were looking at.
     QJsonObject metaData;
-    if (!caption.isEmpty())
-        metaData["caption"] = caption;            // capability: media-caption
+    if (!share.caption.isEmpty())
+        metaData["caption"] = share.caption;      // capability: media-caption
     // The topic is the one that was open when the user pressed Send, carried with the upload
-    // (FileSend::threadId). It used to be read HERE, from whatever is open NOW: an upload finishes
+    // (FileSend::share). It used to be read HERE, from whatever is open NOW: an upload finishes
     // asynchronously, and a batch of files takes minutes, so a user who moved to another topic
     // (or room -- hence the old token check) had the file filed under the wrong one.
-    // Read server-side by Chat/SystemMessage/Listener.php:435.
-    if (threadId > 0)
-        metaData["threadId"] = threadId;          // capability: threads
+    // Read server-side by Chat/SystemMessage/Listener.php (fixMimeTypeOfVoiceMessage), which
+    // reads replyTo and silent from the same object. A replyTo the server cannot reply to (gone,
+    // another room, a system message) is dropped there and the file is shared without it.
+    if (share.threadId > 0)
+        metaData["threadId"] = share.threadId;    // capability: threads
+    if (share.replyToId > 0)
+        metaData["replyTo"] = share.replyToId;
+    if (share.silent)
+        metaData["silent"] = true;                // media-caption (not silent-send) gates it
 
     // A voice message is an ordinary audio attachment PLUS this flag; without
     // it every client renders a file pill instead of a player. The server only
@@ -3170,14 +3316,14 @@ struct ChunkUploadState {
     qint64  chunkSize = 10LL * 1024 * 1024;   // 10 MB (Nextcloud allows 5 MB–5 GB)
     QString uploadFolder;                     // /remote.php/dav/uploads/<user>/<uuid>
     QString destUrl;                          // full URL of the final dav/files target
-    QString fileName, token, caption, tempCopy;
-    int threadId = 0;                         // the topic open when Send was pressed
+    QString fileName, token, tempCopy;
+    FileShareMeta share;                      // caption, topic, reply, silent: fixed at Send
     quint64 gen = 0;                          // the upload this belongs to (MessageListModel::m_uploadGen)
 };
 
 void MessageListModel::uploadFileChunked(const QString &readPath, const QString &fileName,
-                                         const QString &token, const QString &caption,
-                                         const QString &tempCopy, int threadId, quint64 gen)
+                                         const QString &token, const FileShareMeta &share,
+                                         const QString &tempCopy, quint64 gen)
 {
     // Per-upload state shared across the async MKCOL → chunk PUTs → MOVE chain.
     auto st = std::make_shared<ChunkUploadState>();
@@ -3193,8 +3339,8 @@ void MessageListModel::uploadFileChunked(const QString &readPath, const QString 
         return;
     }
     st->size = st->file.size();
-    st->fileName = fileName; st->token = token; st->caption = caption; st->tempCopy = tempCopy;
-    st->threadId = threadId;
+    st->fileName = fileName; st->token = token; st->tempCopy = tempCopy;
+    st->share = share;
     st->gen = gen;
     if (qEnvironmentVariableIsSet("TALQ_CHUNK_SIZE_BYTES"))
         st->chunkSize = qMax<qint64>(1, qEnvironmentVariable("TALQ_CHUNK_SIZE_BYTES").toLongLong());
@@ -3288,7 +3434,7 @@ void MessageListModel::uploadNextChunk(std::shared_ptr<ChunkUploadState> st)
             st->file.close();
             if (!st->tempCopy.isEmpty()) QFile::remove(st->tempCopy);
             m_uploadProgress = 1.0; emit uploadProgressChanged();
-            shareUploadedFile(st->fileName, st->token, st->caption, st->threadId, st->gen);
+            shareUploadedFile(st->fileName, st->token, st->share, st->gen);
         });
         return;
     }
@@ -3386,15 +3532,21 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
 // in exchange for nothing this route does not already do.
 // Send a recording as a voice message. The upload is the ordinary attachment
 // path; the only difference is the messageType flag added at share time.
-void MessageListModel::sendVoiceMessage(const QString &filePath)
+void MessageListModel::sendVoiceMessage(const QString &filePath, const QString &token, int threadId)
 {
-    // m_token.isEmpty() is checked here as well as in sendFileWithCaption: the name is only
-    // consumed by shareUploadedFile, so inserting it for an upload that bails out first would leak it.
-    if (m_token.isEmpty() || filePath.isEmpty() || !QFileInfo::exists(filePath))
+    // The room and topic come from the caller, NOT from what is open now: a recording belongs to
+    // where it was started (VoiceRoomPolicy.h), and the user may be on Home (no room) by the time
+    // it ends. The token is checked here because the name is only consumed by shareUploadedFile,
+    // so inserting it for an upload that bails out first would leak it.
+    if (token.isEmpty() || filePath.isEmpty() || !QFileInfo::exists(filePath))
         return;
     m_voiceMessageFiles.insert(QFileInfo(filePath).fileName());
-    // A recording is always a temp file TalQ made (MainWindow records into %TEMP%).
-    sendFileWithCaption(filePath, QString(), /*deleteWhenShared*/ true);
+    FileSend fs;
+    fs.path = filePath;
+    fs.owned = true;     // a recording is always a temp file TalQ made (MainWindow records into %TEMP%)
+    fs.token = token;
+    fs.share.threadId = threadId;
+    enqueueFileSends({fs});
 }
 
 void MessageListModel::forgetPendingUpload(const QString &fileName)
@@ -3419,16 +3571,31 @@ void MessageListModel::saveFileAs(int fileId, const QString &fileName,
 void MessageListModel::startFileFetch(int fileId, const QString &fileName,
                                       bool openWhenDone, const QString &destPath)
 {
-    if (fileId <= 0 || fileName.isEmpty()) return;
+    if (fileId <= 0 || fileName.isEmpty()) {
+        reportSaveFailed(destPath);
+        return;
+    }
 
     withDavPath(fileId,
         [this, fileId, fileName, openWhenDone, destPath](const QString &path) {
         if (path.isEmpty()) {
+            reportSaveFailed(destPath);
             emit errorOccurred(tr("Could not locate \"%1\" on the server.").arg(fileName));
             return;
         }
         fetchDavFile(path, fileId, fileName, openWhenDone, destPath);
     });
+}
+
+// The voice-message player waits for its cache file and blocks every later click on that clip
+// until the wait ends, so a fetch with a destination that ends without fileSavedAs must say so
+// (it used to end silently and the clip did nothing until TalQ restarted). Sent before the modal
+// error box, whose nested event loop would otherwise hold the waiter's state for as long as the
+// box is up.
+void MessageListModel::reportSaveFailed(const QString &destPath)
+{
+    if (!destPath.isEmpty())
+        emit fileSaveFailed(destPath);
 }
 
 void MessageListModel::withDavPath(int fileId, std::function<void(const QString &)> done)
@@ -3573,22 +3740,36 @@ void MessageListModel::fetchDavFile(const QString &davPath, int fileId,
     // previous implementation buffered the whole reply with readAll(), which
     // holds an entire video in memory to write it straight back out.
     //
-    // An explicit destPath is a place the user just picked in a save dialog,
-    // so it is written as given -- they have already answered the overwrite
-    // question. Only the implicit Downloads destination gets de-duplicated.
-    const QString savePath = destPath.isEmpty() ? uniqueDownloadPath(fileName) : destPath;
-    if (savePath.isEmpty()) {
-        reply->abort();
-        reply->deleteLater();
-        emit errorOccurred(tr("Cannot write to the Downloads folder."));
-        return;
+    // An explicit destPath is a place the user just picked in a save dialog
+    // (or the audio cache's own name), so it is written as given -- they have
+    // already answered the overwrite question. Only the implicit Downloads
+    // destination gets de-duplicated: Downloads/<name>, with " (1)", " (2)" …
+    // appended rather than overwriting, the name cleaned of what NTFS reads as
+    // something else (LocalFileName.h), and the file CREATED by that pick, so
+    // one another program makes in between is never truncated.
+    QString savePath;
+    QFile *out = nullptr;
+    if (destPath.isEmpty()) {
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        if (dir.isEmpty() || !QDir().mkpath(dir)) {
+            reply->abort();
+            reply->deleteLater();
+            emit errorOccurred(tr("Cannot write to the Downloads folder."));
+            return;
+        }
+        out = talq::createUniqueFile(dir, talq::safeDownloadName(fileName), &savePath).release();
+    } else {
+        savePath = destPath;
+        out = new QFile(savePath);
+        if (!out->open(QIODevice::WriteOnly)) {
+            delete out;
+            out = nullptr;
+        }
     }
-
-    auto *out = new QFile(savePath);
-    if (!out->open(QIODevice::WriteOnly)) {
-        delete out;
+    if (!out) {
         reply->abort();
         reply->deleteLater();
+        reportSaveFailed(destPath);
         emit errorOccurred(tr("Cannot save \"%1\".").arg(QFileInfo(savePath).fileName()));
         return;
     }
@@ -3617,45 +3798,50 @@ void MessageListModel::fetchDavFile(const QString &davPath, int fileId,
             // route for the whole life of this feature, and it is exactly the
             // "Open in Nextcloud" action the user can already choose
             // deliberately. Say what went wrong instead.
+            reportSaveFailed(destPath);
             emit errorOccurred(tr("Could not download \"%1\".").arg(fileName));
             return;
         }
 
         qDebug() << "File downloaded to:" << savePath << written << "bytes";
-        if (!destPath.isEmpty()) {
-            // The user chose this location. Announcing it back to them would
-            // be telling them something they just typed.
-            emit fileSavedAs(savePath);
-            return;
-        }
-        emit fileDownloaded(savePath, openWhenDone);
-        if (openWhenDone)
-            QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
+
+        // Mark-of-the-Web BEFORE anything is told the file exists, and before
+        // it is opened: without it Windows runs a received program with no
+        // "from the internet" warning (DownloadMark.h). Off the GUI thread,
+        // because the check behind it can take seconds. A failure to mark
+        // keeps the file; only a file Windows refused, the antivirus flagged
+        // or the check removed is not used.
+        talq::markDownloadedFileAsync(savePath, reply->url(), this,
+            [this, savePath, fileName, openWhenDone, destPath](talq::DownloadMarkOutcome mark) {
+            if (mark == talq::DownloadMarkOutcome::Blocked) {
+                reportSaveFailed(destPath);
+                emit errorOccurred(tr("Windows security settings blocked \"%1\", so it was not saved.")
+                                       .arg(fileName));
+                return;
+            }
+            if (mark == talq::DownloadMarkOutcome::VirusFound) {
+                reportSaveFailed(destPath);
+                emit errorOccurred(tr("Your antivirus flagged \"%1\", so it was not saved.")
+                                       .arg(fileName));
+                return;
+            }
+            if (!talq::downloadUsable(mark)) {
+                reportSaveFailed(destPath);
+                emit errorOccurred(tr("\"%1\" was removed by a security check (Windows or your "
+                                      "antivirus), so it was not saved.").arg(fileName));
+                return;
+            }
+            if (!destPath.isEmpty()) {
+                // The user chose this location. Announcing it back to them would
+                // be telling them something they just typed.
+                emit fileSavedAs(savePath);
+                return;
+            }
+            emit fileDownloaded(savePath, openWhenDone);
+            if (openWhenDone)
+                QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
+        });
     });
-}
-
-// Downloads/<name>, with " (1)", " (2)" … appended rather than overwriting.
-QString MessageListModel::uniqueDownloadPath(const QString &fileName)
-{
-    QString safe = QFileInfo(fileName).fileName();       // strip any directory
-    safe.remove(QRegularExpression("[/\\\\]"));          // extra safety
-    if (safe.isEmpty()) safe = QStringLiteral("download");
-
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    if (dir.isEmpty() || !QDir().mkpath(dir))
-        return QString();
-
-    QString path = dir + QLatin1Char('/') + safe;
-    if (!QFile::exists(path))
-        return path;
-
-    const QString base = QFileInfo(safe).completeBaseName();
-    const QString ext  = QFileInfo(safe).suffix();
-    for (int n = 1; QFile::exists(path); ++n) {
-        path = dir + QLatin1Char('/') + base + " (" + QString::number(n) + ")"
-               + (ext.isEmpty() ? QString() : QLatin1Char('.') + ext);
-    }
-    return path;
 }
 
 void MessageListModel::sendMessageToToken(const QString &targetToken, const QString &text)
@@ -3673,7 +3859,30 @@ void MessageListModel::sendMessageToToken(const QString &targetToken, const QStr
     });
 }
 
+void MessageListModel::setConversationListModel(ConversationListModel *c)
+{
+    if (c == m_conversations)
+        return;
+    if (m_conversations)
+        disconnect(m_conversations, &ConversationListModel::countChanged, this, nullptr);
+    m_conversations = c;
+    if (!c)
+        return;
+    // countChanged follows every SUCCESSFUL list refresh, after the list was
+    // replaced, so the room's lastMessage read here is the fresh one. This is
+    // the trigger when the list learns of a reaction after the poll delivered it.
+    connect(c, &ConversationListModel::countChanged, this, [this]() {
+        if (!m_token.isEmpty())
+            markHiddenRowsRead();
+    });
+}
+
 void MessageListModel::markAsRead()
+{
+    markAsReadImpl(false);
+}
+
+void MessageListModel::markAsReadImpl(bool onlyHiddenRows)
 {
     if (m_token.isEmpty()) return;
 
@@ -3710,6 +3919,23 @@ void MessageListModel::markAsRead()
     // (bugs 2/5/6). Only POST when it strictly advances the known marker.
     const int knownServerRead = m_conversations
         ? m_conversations->lastReadMessageForToken(m_token) : 0;
+    if (onlyHiddenRows && !talq::hiddenRowsReadAllowed(lastId, knownServerRead))
+        return;
+
+    // H8 (ChatSyncLogic.h): in a one-to-one room Talk makes a reaction the
+    // room's lastMessage and counts it as unread, but it is never a row here, so
+    // the newest visible id leaves the room at "1 unread" while it is open. Move
+    // past the visible messages to the room's last entry only when it is not a
+    // readable message, the view is the whole room, and the live poll of THIS
+    // room has already delivered up to it (a stopped poller keeps its old token
+    // and cursor, and a starting one is seeded from the view, so neither counts).
+    const int pollSeenUpTo = (m_poller->isPolling() && m_poller->currentToken() == m_token)
+        ? m_poller->lastKnownMessageId() : 0;
+    Conversation room;
+    if (m_conversations && m_conversations->conversationForToken(m_token, &room))
+        lastId = talq::readMarkerTarget(lastId, room.lastMessageId, room.lastMessageReadable,
+                                        m_threadId > 0 || m_hideThreadMessages, pollSeenUpTo);
+
     if (!talq::shouldPostReadMarker(lastId, knownServerRead))
         return;
 
@@ -3747,13 +3973,17 @@ void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,
         // OCS round-trip. Through scheduleFailed(), not errorOccurred(): the composer has
         // already emptied its box, and this is the only copy of the text.
         emit scheduleFailed(m_token, text,
-                            scheduleRefusalText(400, QStringLiteral("send-at")));
+                            scheduleRefusalText(talq::ScheduleRefusal::PastTime, 400),
+                            replyToId > 0 ? replyToId : 0, talq::ScheduleRefusal::PastTime);
         return;
     }
     emit userSentTo(m_token);
 
     QJsonObject body;
-    body["message"]  = text;
+    // With the bot's @-mention in front where a plain send would get one: the server posts the
+    // stored text as it stands when the time comes, and a bot that only answers a mention would
+    // never see it. `text` (the user's own words) is what a refusal hands back to the box.
+    body["message"]  = outgoingText(text, replyToId);
     body["sendAt"]   = sendAt;
     if (replyToId > 0) body["replyTo"] = replyToId;
     if (silent)        body["silent"]  = true;
@@ -3761,12 +3991,14 @@ void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,
 
     QString token = m_token;
     m_api->post("apps/spreed/api/v1/chat/" + token + "/schedule", body,
-        [this, sendAt, token, text](bool ok, const QJsonObject &data, int status) {
+        [this, sendAt, token, text, replyToId](bool ok, const QJsonObject &data, int status) {
             if (!ok) {
                 // `data` is the refusal's ocs.data ({"error":"send-at"}); ApiClient hands it
                 // over on an HTTP error as well as on an OCS-level one.
-                emit scheduleFailed(token, text,
-                    scheduleRefusalText(status, data.value(QStringLiteral("error")).toString()));
+                const talq::ScheduleRefusal why = talq::classifyScheduleFailure(
+                    status, data.value(QStringLiteral("error")).toString().toStdString());
+                emit scheduleFailed(token, text, scheduleRefusalText(why, status),
+                                    replyToId > 0 ? replyToId : 0, why);
                 return;
             }
             if (m_token == token)
@@ -3774,9 +4006,9 @@ void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,
         });
 }
 
-QString MessageListModel::scheduleRefusalText(int status, const QString &error)
+QString MessageListModel::scheduleRefusalText(talq::ScheduleRefusal why, int status)
 {
-    switch (talq::classifyScheduleFailure(status, error.toStdString())) {
+    switch (why) {
     case talq::ScheduleRefusal::NoConnection:
         return tr("TalQ could not reach the server.");
     case talq::ScheduleRefusal::PastTime:

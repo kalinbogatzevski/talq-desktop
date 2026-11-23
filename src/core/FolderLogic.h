@@ -36,6 +36,7 @@
 
 #include <QByteArray>
 #include <QChar>
+#include <QCollator>
 #include <QCryptographicHash>
 #include <QHash>
 #include <QJsonArray>
@@ -43,6 +44,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QLocale>
 #include <QRegularExpression>
 #include <QSet>
 #include <QString>
@@ -201,8 +203,13 @@ inline bool hasPaintingBase(const QString &s)
 //      idempotent -- a stored name must come back unchanged when it is cleaned again on load
 // Removing the zero-width joiner splits an emoji ZWJ sequence into its parts; that is the price of
 // not letting an invisible character into a painted label.
-inline QString normaliseFolderName(const QString &raw)
+// `shortened`, when given, says whether step 5 CUT the name: never for a name that was only cleaned
+// (stripped characters, collapsed spaces), and never when the result is empty. The glue uses it to
+// tell the user, since the sidebar otherwise shows a shorter name than was typed with no word why.
+inline QString normaliseFolderName(const QString &raw, bool *shortened = nullptr)
 {
+    if (shortened)
+        *shortened = false;
     QString cleaned;
     cleaned.reserve(raw.size());
     for (qsizetype i = 0; i < raw.size();) {
@@ -237,13 +244,18 @@ inline QString normaliseFolderName(const QString &raw)
         cut += (QChar::isHighSurrogate(cleaned.at(cut).unicode()) && cut + 1 < cleaned.size()) ? 2 : 1;
         ++codePoints;
     }
+    const bool wasCut = cut < cleaned.size();
     cleaned.truncate(cut);
     cleaned = cleaned.trimmed();
     // The "is there a base character" test runs on the FINAL string, after the cut: testing before it
     // let 40 combining marks + "a" through, the cut then kept only the marks, and the stored name
     // normalised to EMPTY on the next load -- which drops the folder and every chat filed in it. The
     // function must be idempotent: normaliseFolderName(normaliseFolderName(x)) == normaliseFolderName(x).
-    return folder_detail::hasPaintingBase(cleaned) ? cleaned : QString();
+    if (!folder_detail::hasPaintingBase(cleaned))
+        return QString();
+    if (shortened)
+        *shortened = wasCut;
+    return cleaned;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -323,13 +335,82 @@ inline bool folderNameTaken(const FolderState &s, const QString &name, const QSt
 }
 
 // ---------------------------------------------------------------------------------------------
+// Folder order (D14). The order IS the array position, stored and synced as it always was; there
+// is no "sorted" flag in the file. The list's own order says which rule applies:
+//   - a list in NAME ORDER (folderSortsBefore below) stays in it: a new folder is inserted at its
+//     place and a renamed one moves to its new place. An empty list or a single folder is in name
+//     order, so folders are alphabetical from the first one on;
+//   - a list the user has arranged by hand (Move up / Move down left it out of name order) is left
+//     alone: a new folder goes at the END and a renamed one stays where it is;
+//   - "Sort folders A to Z" (sortFoldersByName) puts a hand-arranged list back into name order.
+// Nothing here runs on load, on repair or on a merged remote state: only a user's own create,
+// rename or sort ever reorders, so a list that another computer (or another locale) left out of
+// name order is never rewritten behind the user's back and two computers cannot re-sort each
+// other's uploads in a loop. The sync merge knows that a rename here can move a folder: a base and a
+// local list both in name order are not a reorder by hand there (FolderSyncLogic.h, Step 5), so a
+// rename made before a pull cannot overwrite the order another computer arranged by hand.
+
+// Locale-aware (the default QLocale, which is the system's), case-insensitive, and digits compared
+// by value ("Folder 2" before "Folder 10"), the way a file list sorts names. Built per call: a
+// QCollator is cheap to make and a static would freeze the locale of the first caller.
+inline QCollator folderNameCollator(const QLocale &locale = QLocale())
+{
+    QCollator c(locale);
+    c.setCaseSensitivity(Qt::CaseInsensitive);
+    c.setNumericMode(true);
+    return c;
+}
+
+// The one ordering of folders: the collator's, then the exact name (code units), then the id. The
+// tie-breaks make it a strict TOTAL order, because twin names ("HQ" and "hq") are tolerated on
+// load: every computer with the same locale then puts the same folders in the same order.
+inline bool folderSortsBefore(const QCollator &c, const Folder &a, const Folder &b)
+{
+    const int byName = c.compare(a.name, b.name);
+    if (byName != 0)
+        return byName < 0;
+    const int exact = QString::compare(a.name, b.name, Qt::CaseSensitive);
+    if (exact != 0)
+        return exact < 0;
+    return a.id < b.id;
+}
+
+namespace folder_detail {
+
+inline bool inNameOrder(const QVector<Folder> &folders, const QCollator &c)
+{
+    for (qsizetype i = 1; i < folders.size(); ++i) {
+        if (folderSortsBefore(c, folders.at(i), folders.at(i - 1)))
+            return false;
+    }
+    return true;
+}
+
+// Insert `f` at its place in a list that is in name order (after any equal: there are none, the
+// order is total).
+inline void insertInNameOrder(QVector<Folder> &folders, const Folder &f, const QCollator &c)
+{
+    const auto at = std::upper_bound(folders.cbegin(), folders.cend(), f,
+                                     [&c](const Folder &x, const Folder &y) { return folderSortsBefore(c, x, y); });
+    folders.insert(at - folders.cbegin(), f);
+}
+
+} // namespace folder_detail
+
+inline bool foldersInNameOrder(const FolderState &s, const QLocale &locale = QLocale())
+{
+    return folder_detail::inNameOrder(s.folders, folderNameCollator(locale));
+}
+
+// ---------------------------------------------------------------------------------------------
 // Mutations. Each returns Ok only when it changed the state; every other outcome leaves it
 // untouched.
 
-// New folders go at the END (display order = creation order, D14). The check order is
-// EmptyName, TooMany, DuplicateName: at the limit no name would work, so say that first.
+// A new folder takes its place in name order when the list is in name order, else it goes at the
+// END (see "Folder order" above). The check order is EmptyName, TooMany, DuplicateName: at the
+// limit no name would work, so say that first.
 inline FolderResult createFolder(FolderState &s, const QString &rawName, quint64 entropy,
-                                 QString *outId = nullptr)
+                                 QString *outId = nullptr, const QLocale &locale = QLocale())
 {
     const QString name = normaliseFolderName(rawName);
     if (name.isEmpty())
@@ -341,15 +422,21 @@ inline FolderResult createFolder(FolderState &s, const QString &rawName, quint64
     Folder f;
     f.id = makeFolderId(entropy, s.folders);
     f.name = name;
-    s.folders.append(f);
+    const QCollator c = folderNameCollator(locale);
+    if (folder_detail::inNameOrder(s.folders, c))
+        folder_detail::insertInNameOrder(s.folders, f, c);
+    else
+        s.folders.append(f);
     if (outId)
         *outId = f.id;
     return FolderResult::Ok;
 }
 
 // Renaming to a name that differs only by case from the folder's OWN name is allowed (that is a
-// case fix, not a duplicate).
-inline FolderResult renameFolder(FolderState &s, const QString &id, const QString &rawName)
+// case fix, not a duplicate). In a list that was in name order the folder moves to its new place;
+// in a hand-arranged one it keeps its position.
+inline FolderResult renameFolder(FolderState &s, const QString &id, const QString &rawName,
+                                 const QLocale &locale = QLocale())
 {
     const int idx = folderIndexOf(s, id);
     if (idx < 0)
@@ -363,7 +450,25 @@ inline FolderResult renameFolder(FolderState &s, const QString &id, const QStrin
         return FolderResult::Unchanged;
     if (folderNameTaken(s, name, id))
         return FolderResult::DuplicateName;
+    const QCollator c = folderNameCollator(locale);
+    const bool keepNameOrder = folder_detail::inNameOrder(s.folders, c);
     s.folders[idx].name = name;
+    if (keepNameOrder) {
+        const Folder f = s.folders.takeAt(idx);
+        folder_detail::insertInNameOrder(s.folders, f, c);
+    }
+    return FolderResult::Ok;
+}
+
+// "Sort folders A to Z": put the list into name order. Unchanged when it already is. Only the order
+// changes: names, ids, collapsed flags and filings are left as they are.
+inline FolderResult sortFoldersByName(FolderState &s, const QLocale &locale = QLocale())
+{
+    const QCollator c = folderNameCollator(locale);
+    if (folder_detail::inNameOrder(s.folders, c))
+        return FolderResult::Unchanged;
+    std::sort(s.folders.begin(), s.folders.end(),
+              [&c](const Folder &x, const Folder &y) { return folderSortsBefore(c, x, y); });
     return FolderResult::Ok;
 }
 

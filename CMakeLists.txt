@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.81.2 LANGUAGES CXX)
+project(talq VERSION 0.82.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,23 @@ find_library(TALQ_MD4C_LIBRARY NAMES libmd4c.a md4c REQUIRED)
 add_library(talq-markdown STATIC src/core/MarkdownHtml.cpp)
 target_include_directories(talq-markdown PUBLIC src ${TALQ_MD4C_INCLUDE_DIR})
 target_link_libraries(talq-markdown PUBLIC Qt6::Core ${TALQ_MD4C_LIBRARY})
+
+# QR code for "TalQ for your phone" (src/core/PhoneAppCode.h): Nayuki's QR Code
+# generator library, C++ version, vendored UNMODIFIED in third_party/qrcodegen
+# (MIT, listed in THIRD-PARTY-NOTICES.md). One .cpp of pure computation, linked
+# statically; nothing outside PhoneAppCode.cpp includes it.
+add_library(talq-qrcodegen STATIC third_party/qrcodegen/qrcodegen.cpp)
+target_include_directories(talq-qrcodegen PUBLIC third_party/qrcodegen)
+
+# Mark-of-the-Web for files saved from a chat (src/core/DownloadMark.h): Windows' Attachment
+# Services over COM, hence ole32. MessageListModel.cpp calls it, so every target that compiles
+# that file links this; the loop that does it for the test targets is at the end of this file.
+add_library(talq-download-mark STATIC src/core/DownloadMark.cpp)
+target_include_directories(talq-download-mark PUBLIC src)
+target_link_libraries(talq-download-mark PUBLIC Qt6::Core)
+if(WIN32)
+    target_link_libraries(talq-download-mark PRIVATE ole32)
+endif()
 
 # GStreamer (for calls)
 set(GSTREAMER_ROOT "C:/msys64/mingw64" CACHE PATH "GStreamer installation root")
@@ -177,6 +194,7 @@ qt_add_executable(talq
     src/ui/ConversationInfoDialog.h
     src/ui/ConversationInfoDialog.cpp
     src/ui/ScreenFit.h
+    src/ui/WindowOnScreen.h
     src/ui/NewChatDialog.h
     src/ui/NewChatDialog.cpp
     src/ui/NextcloudFilePickerDialog.h
@@ -187,6 +205,10 @@ qt_add_executable(talq
     src/ui/ShareOverlay.cpp
     src/ui/UpcomingRemindersDialog.h
     src/ui/UpcomingRemindersDialog.cpp
+    src/core/PhoneAppCode.h
+    src/core/PhoneAppCode.cpp
+    src/ui/PhoneAppDialog.h
+    src/ui/PhoneAppDialog.cpp
     src/core/BackgroundEngine.cpp
     src/core/BackgroundEngine.h
     src/core/BackgroundWorker.cpp
@@ -382,6 +404,15 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # being a NEW minor line it needs a new name. It is odd, so it is the BETA line: a chat or a
 # topic set to Never / Mentions only stops popping up (the setting was saved and
 # shown but never read), and a muted chat's unread count becomes optional.
+#
+# 0.82.x IS "Andreevden" -- Андреевден, St Andrew's Day, 30 November. The stable line
+# usually keeps its beta's name (0.80.x kept "Arhangelovden"); Kalin chose a new one for
+# this cut on 2026-11-23, still on the calendar thread. In folk tradition it is also
+# Mechkinden, Bear Day (the saint harnessed a bear to his plough after it ate his ox), and
+# from it the day is said to grow by one millet grain a day. It is even, so it is the
+# STABLE line: it promotes the 0.81.x beta and adds the phone code, folders A to Z and a
+# long list of small repairs. Sources (BNR English): bnr.bg/en/post/100902884
+# (st-andrews-day-legends-beliefs-customs) and bnr.bg/en/post/101565179.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -390,7 +421,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Friday 13th\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Andreevden\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
@@ -500,6 +531,8 @@ target_link_libraries(talq PRIVATE
     Qt6::Concurrent
     Qt6::Multimedia
     ${GST_LIBRARIES}
+    talq-qrcodegen
+    talq-download-mark
 )
 
 # Windows-specific settings
